@@ -135,16 +135,17 @@ class MultimodalProcessor:
     async def process_content(self, content_parts: List[ContentPart]) -> Tuple[str, List[ADKPart]]:
         """
         Process content parts, extracting text and handling multimodal content.
+        Supports: text, image_url, audio_url, video_url, input_audio, file
         Returns tuple of (combined_text, adk_parts)
         """
         text_parts = []
         adk_parts = []
-        
+
         logger.info(f"Starting multimodal processing for {len(content_parts)} content parts")
-        
+
         for i, part in enumerate(content_parts):
             logger.info(f"Processing content part {i}: type={part.type}")
-            
+
             if part.type == "text" and part.text:
                 logger.info(f"Found text part: {part.text[:100]}...")
                 text_parts.append(part.text)
@@ -162,54 +163,200 @@ class MultimodalProcessor:
                             logger.warning(f"Failed to download URL: {url} - no data returned")
                     except Exception as e:
                         logger.error(f"Failed to process URL {url}: {e}")
-                        
+
             elif part.type == "image_url" and part.image_url:
-                logger.info(f"Found image_url part: {part.image_url.url[:100]}...")
-                
-                # 检查是否为Base64数据
-                if part.image_url.url.startswith("data:"):
-                    try:
-                        logger.info(f"Processing Base64 image data")
-                        # 从数据URL中提取MIME类型和Base64数据
-                        mime_type = None
-                        if ":" in part.image_url.url:
-                            mime_type = part.image_url.url.split(":")[1].split(";")[0]
-                        
-                        inline_data = self.process_base64_file(
-                            part.image_url.url, 
-                            "image", 
-                            mime_type
-                        )
-                        if inline_data:
-                            logger.info(f"Successfully processed Base64 image: {inline_data.mimeType}")
-                            adk_parts.append(ADKPart(inlineData=inline_data))
-                        else:
-                            logger.warning(f"Failed to process Base64 image data")
-                    except Exception as e:
-                        logger.error(f"Failed to process Base64 image: {e}")
-                else:
-                    # 处理URL图片
-                    try:
-                        logger.info(f"Attempting to download image URL: {part.image_url.url}")
-                        inline_data = await self._download_and_convert_url(part.image_url.url)
-                        if inline_data:
-                            logger.info(f"Successfully downloaded and converted image: {inline_data.mimeType}, data length: {len(inline_data.data)}")
-                            adk_parts.append(ADKPart(inlineData=inline_data))
-                        else:
-                            logger.warning(f"Failed to download image URL: {part.image_url.url} - no data returned")
-                    except Exception as e:
-                        logger.error(f"Failed to process image URL {part.image_url.url}: {e}")
+                await self._process_image_url(part.image_url.url, adk_parts)
+
+            elif part.type == "audio_url" and part.audio_url:
+                await self._process_audio_url(part.audio_url.url, adk_parts)
+
+            elif part.type == "video_url" and part.video_url:
+                await self._process_video_url(part.video_url.url, adk_parts)
+
+            elif part.type == "input_audio" and part.input_audio:
+                self._process_input_audio(part.input_audio, adk_parts)
+
+            elif part.type == "file" and part.file:
+                await self._process_file(part.file, adk_parts)
+
             else:
                 logger.warning(f"Unsupported content part type: {part.type}")
-        
+
         # Combine all text parts
         combined_text = " ".join(text_parts)
-        
+
         # Add text part if we have combined text
         if combined_text.strip():
             adk_parts.insert(0, ADKPart(text=combined_text))
-            
+
         return combined_text, adk_parts
+
+    async def _process_image_url(self, url: str, adk_parts: List[ADKPart]):
+        """处理图片URL（支持URL和Base64数据）"""
+        logger.info(f"Found image_url part: {url[:100]}...")
+
+        if url.startswith("data:"):
+            try:
+                logger.info(f"Processing Base64 image data")
+                mime_type = None
+                if ":" in url:
+                    mime_type = url.split(":")[1].split(";")[0]
+
+                inline_data = self.process_base64_file(url, "image", mime_type)
+                if inline_data:
+                    logger.info(f"Successfully processed Base64 image: {inline_data.mimeType}")
+                    adk_parts.append(ADKPart(inlineData=inline_data))
+                else:
+                    logger.warning(f"Failed to process Base64 image data")
+            except Exception as e:
+                logger.error(f"Failed to process Base64 image: {e}")
+        else:
+            try:
+                logger.info(f"Attempting to download image URL: {url}")
+                inline_data = await self._download_and_convert_url(url)
+                if inline_data:
+                    logger.info(f"Successfully downloaded and converted image: {inline_data.mimeType}")
+                    adk_parts.append(ADKPart(inlineData=inline_data))
+                else:
+                    logger.warning(f"Failed to download image URL: {url}")
+            except Exception as e:
+                logger.error(f"Failed to process image URL {url}: {e}")
+
+    async def _process_audio_url(self, url: str, adk_parts: List[ADKPart]):
+        """处理音频URL"""
+        logger.info(f"Found audio_url part: {url[:100]}...")
+
+        if url.startswith("data:"):
+            try:
+                logger.info(f"Processing Base64 audio data")
+                mime_type = None
+                if ":" in url:
+                    mime_type = url.split(":")[1].split(";")[0]
+
+                inline_data = self.process_base64_file(url, "audio", mime_type)
+                if inline_data:
+                    logger.info(f"Successfully processed Base64 audio: {inline_data.mimeType}")
+                    adk_parts.append(ADKPart(inlineData=inline_data))
+                else:
+                    logger.warning(f"Failed to process Base64 audio data")
+            except Exception as e:
+                logger.error(f"Failed to process Base64 audio: {e}")
+        else:
+            try:
+                logger.info(f"Attempting to download audio URL: {url}")
+                inline_data = await self._download_and_convert_url(url)
+                if inline_data:
+                    logger.info(f"Successfully downloaded and converted audio: {inline_data.mimeType}")
+                    adk_parts.append(ADKPart(inlineData=inline_data))
+                else:
+                    logger.warning(f"Failed to download audio URL: {url}")
+            except Exception as e:
+                logger.error(f"Failed to process audio URL {url}: {e}")
+
+    async def _process_video_url(self, url: str, adk_parts: List[ADKPart]):
+        """处理视频URL"""
+        logger.info(f"Found video_url part: {url[:100]}...")
+
+        if url.startswith("data:"):
+            try:
+                logger.info(f"Processing Base64 video data")
+                mime_type = None
+                if ":" in url:
+                    mime_type = url.split(":")[1].split(";")[0]
+
+                inline_data = self.process_base64_file(url, "video", mime_type)
+                if inline_data:
+                    logger.info(f"Successfully processed Base64 video: {inline_data.mimeType}")
+                    adk_parts.append(ADKPart(inlineData=inline_data))
+                else:
+                    logger.warning(f"Failed to process Base64 video data")
+            except Exception as e:
+                logger.error(f"Failed to process Base64 video: {e}")
+        else:
+            try:
+                logger.info(f"Attempting to download video URL: {url}")
+                inline_data = await self._download_and_convert_url(url)
+                if inline_data:
+                    logger.info(f"Successfully downloaded and converted video: {inline_data.mimeType}")
+                    adk_parts.append(ADKPart(inlineData=inline_data))
+                else:
+                    logger.warning(f"Failed to download video URL: {url}")
+            except Exception as e:
+                logger.error(f"Failed to process video URL {url}: {e}")
+
+    def _process_input_audio(self, input_audio, adk_parts: List[ADKPart]):
+        """处理 input_audio 类型（OpenAI格式的音频输入）"""
+        logger.info(f"Found input_audio part, format: {input_audio.format}")
+
+        try:
+            # 根据format推断MIME类型
+            format_to_mime = {
+                "mp3": "audio/mpeg",
+                "wav": "audio/wav",
+                "flac": "audio/flac",
+                "aac": "audio/aac",
+                "ogg": "audio/ogg",
+                "m4a": "audio/mp4",
+                "webm": "audio/webm"
+            }
+            mime_type = format_to_mime.get(input_audio.format.lower(), f"audio/{input_audio.format}")
+
+            # 创建内联数据
+            inline_data = ADKInlineData(
+                mimeType=mime_type,
+                data=input_audio.data
+            )
+            logger.info(f"Successfully processed input_audio: {mime_type}")
+            adk_parts.append(ADKPart(inlineData=inline_data))
+        except Exception as e:
+            logger.error(f"Failed to process input_audio: {e}")
+
+    async def _process_file(self, file_content, adk_parts: List[ADKPart]):
+        """处理通用文件类型"""
+        logger.info(f"Found file part, filename: {file_content.filename}")
+
+        try:
+            # 优先使用Base64数据
+            if file_content.data:
+                mime_type = file_content.mime_type or "application/octet-stream"
+
+                # 验证文件
+                try:
+                    file_data = base64.b64decode(file_content.data)
+                    is_valid, error_msg, detected_mime = self.validate_file(
+                        file_data,
+                        file_content.filename or "file",
+                        mime_type
+                    )
+                    if not is_valid:
+                        logger.warning(f"File validation failed: {error_msg}")
+                        return
+
+                    # 重新编码确保格式正确
+                    final_base64 = base64.b64encode(file_data).decode('utf-8')
+                    inline_data = ADKInlineData(
+                        mimeType=detected_mime,
+                        data=final_base64
+                    )
+                    logger.info(f"Successfully processed file data: {detected_mime}")
+                    adk_parts.append(ADKPart(inlineData=inline_data))
+                except Exception as e:
+                    logger.error(f"Failed to process file data: {e}")
+
+            # 如果没有数据但有URL，尝试下载
+            elif file_content.url:
+                logger.info(f"Attempting to download file URL: {file_content.url}")
+                inline_data = await self._download_and_convert_url(file_content.url)
+                if inline_data:
+                    logger.info(f"Successfully downloaded and converted file: {inline_data.mimeType}")
+                    adk_parts.append(ADKPart(inlineData=inline_data))
+                else:
+                    logger.warning(f"Failed to download file URL: {file_content.url}")
+            else:
+                logger.warning("File content has neither data nor url")
+
+        except Exception as e:
+            logger.error(f"Failed to process file: {e}")
     
     def _extract_urls_from_text(self, text: str) -> List[str]:
         """Extract HTTP/HTTPS URLs and file paths from text using regex."""

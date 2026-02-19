@@ -12,16 +12,44 @@ class MessageType(str, Enum):
 class ContentPartType(str, Enum):
     TEXT = "text"
     IMAGE_URL = "image_url"
+    AUDIO_URL = "audio_url"
+    VIDEO_URL = "video_url"
+    INPUT_AUDIO = "input_audio"
+    FILE = "file"
 
 
 class ImageUrl(BaseModel):
     url: str
 
 
+class AudioUrl(BaseModel):
+    url: str
+
+
+class VideoUrl(BaseModel):
+    url: str
+
+
+class InputAudio(BaseModel):
+    data: str  # Base64 encoded audio data
+    format: str  # e.g., "mp3", "wav", "flac", "aac"
+
+
+class FileContent(BaseModel):
+    url: Optional[str] = None
+    data: Optional[str] = None  # Base64 encoded file data
+    filename: Optional[str] = None
+    mime_type: Optional[str] = None
+
+
 class ContentPart(BaseModel):
     type: ContentPartType
     text: Optional[str] = None
     image_url: Optional[ImageUrl] = None
+    audio_url: Optional[AudioUrl] = None
+    video_url: Optional[VideoUrl] = None
+    input_audio: Optional[InputAudio] = None
+    file: Optional[FileContent] = None
 
 
 class ChatMessage(BaseModel):
