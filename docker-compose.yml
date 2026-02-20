@@ -2,32 +2,33 @@ version: '3.8'
 
 services:
   adk-middleware:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: adk-middleware:latest
+    container_name: adk-middleware
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:8080"
     environment:
-      - ADK_HOST=http://adk-backend:8000
-      - ADK_APP_NAME=default_agent
+      - ADK_HOST=${ADK_HOST:-http://host.docker.internal:8000}
+      - ADK_APP_NAME=${ADK_APP_NAME:-agent}
       - PORT=8080
-      - LOG_LEVEL=INFO
-      - MAX_FILE_SIZE_MB=20
-      - DOWNLOAD_TIMEOUT=30
-    depends_on:
-      - adk-backend
-    networks:
-      - adk-network
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-20}
+      - DOWNLOAD_TIMEOUT=${DOWNLOAD_TIMEOUT:-30}
+      - REQUIRE_API_KEY=${REQUIRE_API_KEY:-false}
+      - API_KEYS=${API_KEYS:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
-
-  # This is a placeholder for your actual ADK backend service
-  # Replace with your actual ADK service configuration
-  adk-backend:
-    image: your-adk-backend:latest
-    ports:
-      - "8000:8000"
-    networks:
-      - adk-network
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 networks:
-  adk-network:
+  default:
+    name: adk-network
     driver: bridge

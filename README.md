@@ -121,6 +121,70 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 4
 ```
 
+## Docker 部署
+
+### 快速启动
+
+```bash
+# 复制配置文件
+cp .env.example .env
+
+# 编辑配置
+vim .env  # 修改 ADK_HOST 等配置
+
+# 构建并启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+```
+
+### 手动构建镜像
+
+```bash
+# 构建镜像
+docker build -t adk-middleware:latest .
+
+# 运行容器
+docker run -d \
+  --name adk-middleware \
+  -p 8080:8080 \
+  -e ADK_HOST=http://your-adk-host:8000 \
+  -e ADK_APP_NAME=agent \
+  adk-middleware:latest
+```
+
+### Docker 配置说明
+
+| 环境变量 | 默认值 | 说明 |
+|---------|--------|------|
+| `ADK_HOST` | `http://host.docker.internal:8000` | ADK 后端地址 |
+| `ADK_APP_NAME` | `agent` | ADK 应用名称 |
+| `PORT` | `8080` | 服务端口 |
+| `LOG_LEVEL` | `INFO` | 日志级别 |
+| `MAX_FILE_SIZE_MB` | `20` | 最大文件大小 |
+| `DOWNLOAD_TIMEOUT` | `30` | URL 下载超时 |
+| `REQUIRE_API_KEY` | `false` | 是否启用 API Key |
+| `API_KEYS` | (空) | API Key 列表 |
+
+### 连接本地 ADK
+
+如果 ADK 运行在宿主机上，使用 `host.docker.internal`：
+
+```yaml
+environment:
+  - ADK_HOST=http://host.docker.internal:8000
+```
+
+### 健康检查
+
+容器内置健康检查，可通过以下命令查看状态：
+
+```bash
+docker ps  # 查看 STATUS 列的 healthy 状态
+docker inspect --format='{{.State.Health.Status}}' adk-middleware
+```
+
 ## API 端点
 
 ### 核心端点

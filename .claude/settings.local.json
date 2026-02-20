@@ -6,7 +6,8 @@
       "Bash(source:*)",
       "Bash(pip install:*)",
       "Bash(curl:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(docker build:*)"
     ]
   }
 }
