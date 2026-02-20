@@ -25,15 +25,15 @@ class ADKClient:
     async def create_chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
         """Create a non-streaming chat completion."""
         adk_request = await self._convert_to_adk_request(request)
-        
+
         # Ensure session exists before running
         await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId)
-        
+
         # Log the request for debugging
         request_data = adk_request.to_adk_format()
         logger.info(f"Sending ADK request to {self.adk_host}/run")
         logger.debug(f"Request data: {request_data}")
-        
+
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
@@ -41,11 +41,14 @@ class ADKClient:
                     json=request_data
                 )
                 logger.info(f"ADK response status: {response.status_code}")
+
+                if response.status_code == 200:
+                    adk_response = response.json()
+                    return self._convert_from_adk_response(adk_response, request.model)
+
+                # Handle error response
                 response.raise_for_status()
-                
-                adk_response = response.json()
-                return self._convert_from_adk_response(adk_response, request.model)
-                
+
         except httpx.HTTPStatusError as e:
             logger.error(f"ADK HTTP error: {e.response.status_code} - {e.response.text}")
             raise
@@ -54,18 +57,17 @@ class ADKClient:
             raise
     
     async def create_chat_completion_stream(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
-        """Create a streaming chat completion using non-streaming ADK endpoint."""
+        """Create a streaming chat completion."""
         adk_request = await self._convert_to_adk_request(request)
         adk_request.streaming = False  # Use non-streaming endpoint
-        
+
         # Ensure session exists before running
         await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId)
-        
+
         # Log the request for debugging
         request_data = adk_request.to_adk_format()
-        logger.info(f"Sending ADK request to {self.adk_host}/run (non-streaming)")
-        logger.debug(f"Request data: {request_data}")
-        
+        logger.info(f"Sending ADK request to {self.adk_host}/run (streaming mode)")
+
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
@@ -73,22 +75,24 @@ class ADKClient:
                     json=request_data
                 )
                 logger.info(f"ADK response status: {response.status_code}")
-                response.raise_for_status()
-                
+
+                if response.status_code != 200:
+                    response.raise_for_status()
+
                 adk_response = response.json()
                 logger.info(f"ADK response received: {type(adk_response)}")
-                
+
                 # Convert ADK response to OpenAI format
                 openai_response = self._convert_from_adk_response(adk_response, request.model)
-                
+
                 if openai_response.choices and openai_response.choices[0].message.content:
                     content = openai_response.choices[0].message.content
-                    
+
                     # Simulate streaming by sending content in chunks
                     chunk_size = 10  # Send 10 characters at a time
                     for i in range(0, len(content), chunk_size):
                         chunk_content = content[i:i + chunk_size]
-                        
+
                         # Create OpenAI streaming chunk
                         chunk = {
                             "id": f"chatcmpl-{int(time.time())}",
@@ -103,13 +107,13 @@ class ADKClient:
                                 }
                             ]
                         }
-                        
+
                         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                        
+
                         # Small delay to simulate streaming
                         import asyncio
                         await asyncio.sleep(0.05)
-                    
+
                     # Send final chunk with finish_reason
                     final_chunk = {
                         "id": f"chatcmpl-{int(time.time())}",
@@ -124,19 +128,50 @@ class ADKClient:
                             }
                         ]
                     }
-                    
+
                     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
-                
+
                 # Send final [DONE] message
                 yield "data: [DONE]\n\n"
-                
+
         except httpx.HTTPStatusError as e:
-            logger.error(f"ADK HTTP error: {e.response.status_code} - {e.response.text}")
-            raise
+            logger.error(f"ADK HTTP error in stream: {e.response.status_code} - {e.response.text}")
+            # Send error as SSE event
+            error_chunk = {
+                "id": f"chatcmpl-{int(time.time())}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": f"[Error: {e.response.status_code}]"},
+                        "finish_reason": "error"
+                    }
+                ]
+            }
+            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
         except Exception as e:
-            logger.error(f"Error in ADK call: {e}")
-            raise
-    
+            logger.error(f"Error in ADK stream: {e}")
+            # Send error as SSE event
+            error_chunk = {
+                "id": f"chatcmpl-{int(time.time())}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": f"[Error: {str(e)}]"},
+                        "finish_reason": "error"
+                    }
+                ]
+            }
+            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
     async def list_models(self) -> ListModelsResponse:
         """List available models (ADK agents)."""
         # For now, return a default model. In a real implementation, 
@@ -412,18 +447,22 @@ class ADKClient:
     async def _ensure_session(self, app_name: str, user_id: str, session_id: str):
         """Ensure session exists before running agent."""
         session_key = f"{app_name}:{user_id}:{session_id}"
-        
+
         if session_key in self._session_cache:
+            logger.debug(f"Session already in cache: {session_key}")
             return
-        
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Create session using ADK API
+                logger.info(f"Creating ADK session: {session_id} for app={app_name}, user={user_id}")
                 response = await client.post(
                     f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions",
                     json={"sessionId": session_id}
                 )
-                
+
+                logger.info(f"Session creation response: {response.status_code}")
+
                 if response.status_code in [200, 201]:
                     logger.info(f"Created ADK session: {session_id}")
                     self._session_cache.add(session_key)
@@ -432,8 +471,56 @@ class ADKClient:
                     logger.info(f"ADK session already exists: {session_id}")
                     self._session_cache.add(session_key)
                 else:
-                    logger.warning(f"Failed to create ADK session: {response.status_code}")
-                    
+                    logger.warning(f"Failed to create ADK session: {response.status_code} - {response.text}")
+
         except Exception as e:
             logger.error(f"Error ensuring ADK session: {e}")
             # Don't raise here, let the main request continue
+
+    async def _delete_session(self, app_name: str, user_id: str, session_id: str) -> bool:
+        """Delete an ADK session."""
+        session_key = f"{app_name}:{user_id}:{session_id}"
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                logger.info(f"Deleting ADK session: {session_id}")
+                response = await client.delete(
+                    f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+                )
+
+                if response.status_code in [200, 204, 404]:
+                    logger.info(f"Deleted ADK session: {session_id}")
+                    self._session_cache.discard(session_key)
+                    return True
+                else:
+                    logger.warning(f"Failed to delete session: {response.status_code}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error deleting ADK session: {e}")
+            return False
+
+    async def _reset_session(self, app_name: str, user_id: str, session_id: str):
+        """Reset a corrupted session by deleting and recreating it."""
+        logger.warning(f"Resetting corrupted session: {session_id}")
+
+        # Delete the session
+        await self._delete_session(app_name, user_id, session_id)
+
+        # Clear from cache so it will be recreated
+        session_key = f"{app_name}:{user_id}:{session_id}"
+        self._session_cache.discard(session_key)
+
+        # Create new session
+        await self._ensure_session(app_name, user_id, session_id)
+
+    def _is_recoverable_error(self, status_code: int, response_text: str) -> bool:
+        """Check if an error is recoverable by resetting the session."""
+        # Client errors (4xx) might be due to corrupted session state
+        # Especially 400 Bad Request with multimodal content issues
+        if status_code == 400:
+            return True
+        # Some 500 errors might also be recoverable
+        if status_code >= 500:
+            return True
+        return False

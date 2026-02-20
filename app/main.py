@@ -66,16 +66,35 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.post("/v1/chat/completions")
 async def create_chat_completion(
     request: ChatCompletionRequest,
+    http_request: Request,
     api_key_valid: bool = Depends(verify_api_key_dependency)
 ):
     """Create a chat completion (streaming or non-streaming)."""
     try:
         logger.info(f"=== CHAT COMPLETION REQUEST START ===")
+
+        # 从请求头获取 Session ID 或 User ID（支持多会话）
+        session_id_override = http_request.headers.get("X-Session-ID")
+        user_id_override = http_request.headers.get("X-User-ID")
+
+        # 设置会话标识
+        if session_id_override:
+            request.user = session_id_override
+            logger.info(f"Using session_id from header: {session_id_override}")
+        elif user_id_override:
+            request.user = user_id_override
+            logger.info(f"Using user_id from header: {user_id_override}")
+        elif not request.user:
+            # 如果没有指定 user，生成一个随机的临时 ID（每次请求都是新会话）
+            import uuid
+            request.user = f"temp_{uuid.uuid4().hex[:8]}"
+            logger.info(f"Generated temp user_id: {request.user}")
+
         logger.info(f"Model: {request.model}, User: {request.user}, Stream: {request.stream}")
-        
+
         # Log the complete request for debugging
         logger.info(f"Complete request: {request.model_dump()}")
-        
+
         # Log detailed message information
         logger.info(f"Request has {len(request.messages)} messages")
         for i, msg in enumerate(request.messages):
@@ -92,9 +111,9 @@ async def create_chat_completion(
                         logger.info(f"      Image URL: '{part.image_url.url}'")
                     else:
                         logger.warning(f"      Unknown part content: {part}")
-        
+
         logger.info(f"=== CHAT COMPLETION REQUEST END ===")
-        
+
         # Validate request
         if not request.messages:
             raise HTTPException(status_code=400, detail="Messages cannot be empty")
@@ -158,40 +177,54 @@ async def upload_file(
 ) -> Dict[str, Any]:
     """
     上传文件并转换为Base64格式供ADK使用
+    支持 HTML/Markdown 文本提取
     """
     try:
         from app.multimodal import MultimodalProcessor
         processor = MultimodalProcessor()
-        
+
         # 读取文件内容
         file_content = await file.read()
-        
+
         # 验证和处理文件
         is_valid, error_msg, detected_mime = processor.validate_file(
             file_content, file.filename, file.content_type
         )
-        
+
         if not is_valid:
             raise HTTPException(status_code=400, detail=error_msg)
-        
+
         # 转换为Base64
-        inline_data = processor.process_base64_file(
+        inline_data, extracted_text = processor.process_base64_file(
             base64.b64encode(file_content).decode('utf-8'),
             file.filename,
             detected_mime
         )
-        
-        if not inline_data:
+
+        if inline_data:
+            # 二进制文件（图片、视频、音频、PDF等）
+            return {
+                "success": True,
+                "filename": file.filename,
+                "mime_type": inline_data.mimeType,
+                "base64_data": inline_data.data,
+                "size": len(file_content),
+                "type": "binary"
+            }
+        elif extracted_text:
+            # 文本提取后的文件（HTML、Markdown等）
+            return {
+                "success": True,
+                "filename": file.filename,
+                "original_mime_type": detected_mime,
+                "extracted_text": extracted_text,
+                "text_length": len(extracted_text),
+                "size": len(file_content),
+                "type": "text"
+            }
+        else:
             raise HTTPException(status_code=500, detail="文件处理失败")
-        
-        return {
-            "success": True,
-            "filename": file.filename,
-            "mime_type": inline_data.mimeType,
-            "base64_data": inline_data.data,
-            "size": len(file_content)
-        }
-        
+
     except HTTPException:
         raise
     except Exception as e:
