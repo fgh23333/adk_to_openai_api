@@ -57,120 +57,196 @@ class ADKClient:
             raise
     
     async def create_chat_completion_stream(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
-        """Create a streaming chat completion."""
+        """Create a streaming chat completion using ADK SSE endpoint."""
         adk_request = await self._convert_to_adk_request(request)
-        adk_request.streaming = False  # Use non-streaming endpoint
+        adk_request.streaming = True  # Enable ADK streaming
 
         # Ensure session exists before running
         await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId)
 
         # Log the request for debugging
         request_data = adk_request.to_adk_format()
-        logger.info(f"Sending ADK request to {self.adk_host}/run (streaming mode)")
+        logger.info(f"Sending ADK request to {self.adk_host}/run_sse (real streaming)")
+
+        # Track sent content for deduplication
+        sent_content_tracker = {}
+        tracker_key = f"{request.user or 'default'}:{int(time.time())}"
+        sent_content_tracker[tracker_key] = ""
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{self.adk_host}/run",
-                    json=request_data
-                )
-                logger.info(f"ADK response status: {response.status_code}")
+                async with client.stream(
+                    "POST",
+                    f"{self.adk_host}/run_sse",
+                    json=request_data,
+                    headers={"Accept": "text/event-stream"}
+                ) as response:
+                    logger.info(f"ADK SSE response status: {response.status_code}")
 
-                if response.status_code != 200:
-                    response.raise_for_status()
+                    if response.status_code != 200:
+                        error_body = await response.aread()
+                        logger.error(f"ADK SSE error: {response.status_code} - {error_body}")
+                        yield self._create_error_chunk(request.model, f"ADK error: {response.status_code}")
+                        yield "data: [DONE]\n\n"
+                        return
 
-                adk_response = response.json()
-                logger.info(f"ADK response received: {type(adk_response)}")
+                    chat_id = f"chatcmpl-{int(time.time())}"
 
-                # Convert ADK response to OpenAI format
-                openai_response = self._convert_from_adk_response(adk_response, request.model)
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
 
-                if openai_response.choices and openai_response.choices[0].message.content:
-                    content = openai_response.choices[0].message.content
+                        # Parse SSE line
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
 
-                    # Simulate streaming by sending content in chunks
-                    chunk_size = 10  # Send 10 characters at a time
-                    for i in range(0, len(content), chunk_size):
-                        chunk_content = content[i:i + chunk_size]
+                            if data_str == "[DONE]":
+                                # Send final chunk
+                                yield self._create_final_chunk(chat_id, request.model)
+                                yield "data: [DONE]\n\n"
+                                return
 
-                        # Create OpenAI streaming chunk
-                        chunk = {
-                            "id": f"chatcmpl-{int(time.time())}",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": request.model,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {"content": chunk_content},
-                                    "finish_reason": None
-                                }
-                            ]
-                        }
+                            try:
+                                event_data = json.loads(data_str)
+                                chunk = self._convert_adk_sse_to_openai(
+                                    event_data,
+                                    request.model,
+                                    chat_id,
+                                    sent_content_tracker[tracker_key]
+                                )
 
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                                if chunk:
+                                    # Update tracker with new content
+                                    if "choices" in chunk and chunk["choices"]:
+                                        delta = chunk["choices"][0].get("delta", {})
+                                        new_content = delta.get("content", "")
+                                        if new_content:
+                                            sent_content_tracker[tracker_key] += new_content
 
-                        # Small delay to simulate streaming
-                        import asyncio
-                        await asyncio.sleep(0.05)
+                                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-                    # Send final chunk with finish_reason
-                    final_chunk = {
-                        "id": f"chatcmpl-{int(time.time())}",
-                        "object": "chat.completion.chunk",
-                        "created": int(time.time()),
-                        "model": request.model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {},
-                                "finish_reason": "stop"
-                            }
-                        ]
-                    }
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Failed to parse SSE data: {data_str[:100]}")
+                                continue
 
-                    yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+                    # If we get here without [DONE], send final chunk anyway
+                    yield self._create_final_chunk(chat_id, request.model)
+                    yield "data: [DONE]\n\n"
 
-                # Send final [DONE] message
-                yield "data: [DONE]\n\n"
+        except httpx.TimeoutException:
+            logger.error("ADK SSE timeout")
+            yield self._create_error_chunk(request.model, "Request timeout")
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error(f"Error in ADK SSE stream: {e}")
+            yield self._create_error_chunk(request.model, str(e))
+            yield "data: [DONE]\n\n"
 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"ADK HTTP error in stream: {e.response.status_code} - {e.response.text}")
-            # Send error as SSE event
-            error_chunk = {
-                "id": f"chatcmpl-{int(time.time())}",
+    def _convert_adk_sse_to_openai(self, adk_event: dict, model: str, chat_id: str, previously_sent: str) -> Optional[dict]:
+        """
+        Convert ADK SSE event to OpenAI streaming chunk format.
+        Handles deduplication by tracking previously sent content.
+        """
+        try:
+            # Extract content from ADK event
+            content = ""
+
+            # Try different event structures
+            if "content" in adk_event:
+                content_part = adk_event["content"]
+                if isinstance(content_part, dict) and "parts" in content_part:
+                    for part in content_part["parts"]:
+                        if "text" in part:
+                            content += part["text"]
+            elif "text" in adk_event:
+                content = adk_event["text"]
+            elif "data" in adk_event and isinstance(adk_event["data"], str):
+                content = adk_event["data"]
+
+            if not content:
+                return None
+
+            # Deduplication: only send new content
+            new_content = self._extract_new_content(content, previously_sent)
+
+            if not new_content:
+                return None
+
+            return {
+                "id": chat_id,
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
-                "model": request.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": f"[Error: {e.response.status_code}]"},
-                        "finish_reason": "error"
-                    }
-                ]
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": new_content},
+                    "finish_reason": None
+                }]
             }
-            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
 
         except Exception as e:
-            logger.error(f"Error in ADK stream: {e}")
-            # Send error as SSE event
-            error_chunk = {
-                "id": f"chatcmpl-{int(time.time())}",
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": request.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": f"[Error: {str(e)}]"},
-                        "finish_reason": "error"
-                    }
-                ]
-            }
-            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+            logger.error(f"Error converting ADK SSE event: {e}")
+            return None
+
+    def _extract_new_content(self, current_content: str, previously_sent: str) -> str:
+        """
+        Extract only new content that hasn't been sent yet.
+        Handles incremental updates and full content updates.
+        """
+        if not previously_sent:
+            return current_content
+
+        # If current is exactly the same as previous, nothing new
+        if current_content == previously_sent:
+            return ""
+
+        # If current starts with previous, it's an incremental update
+        if current_content.startswith(previously_sent):
+            return current_content[len(previously_sent):]
+
+        # If current is shorter, might be a fragment or reset
+        # Check for overlap
+        max_overlap = 0
+        for i in range(1, min(len(previously_sent), len(current_content)) + 1):
+            if previously_sent[-i:] == current_content[:i]:
+                max_overlap = i
+
+        if max_overlap > 0:
+            return current_content[max_overlap:]
+
+        # No clear relationship, send full content (might be a reset)
+        logger.warning(f"Content reset detected, sending full content")
+        return current_content
+
+    def _create_final_chunk(self, chat_id: str, model: str) -> str:
+        """Create the final streaming chunk with finish_reason."""
+        chunk = {
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }]
+        }
+        return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+    def _create_error_chunk(self, model: str, error_message: str) -> str:
+        """Create an error chunk."""
+        chunk = {
+            "id": f"chatcmpl-{int(time.time())}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": f"[Error: {error_message}]"},
+                "finish_reason": "error"
+            }]
+        }
+        return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
     async def list_models(self) -> ListModelsResponse:
         """List available models (ADK agents)."""
