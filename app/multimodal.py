@@ -242,6 +242,20 @@ class MultimodalProcessor:
             ]
         }
 
+        # 需要忽略的 URL 资源类型（CSS, JS, 字体等）
+        self.ignored_url_types = {
+            "text/css",
+            "text/javascript",
+            "application/javascript",
+            "application/x-javascript",
+            "font/woff",
+            "font/woff2",
+            "font/ttf",
+            "font/otf",
+            "image/x-icon",
+            "image/vnd.microsoft.icon",
+        }
+
         # 需要提取文本的文件类型 -> 提取方法
         self.text_extraction_types = {
             "text/html": "html",
@@ -640,7 +654,7 @@ class MultimodalProcessor:
     async def _download_and_convert_url(self, url: str) -> Optional[ADKInlineData]:
         """
         Download file from URL and convert to base64 inline data.
-        Returns None if download fails or file is too large.
+        Returns None if download fails, file is too large, or type should be ignored.
         """
         logger.info(f"Starting download of URL: {url}")
         try:
@@ -649,49 +663,73 @@ class MultimodalProcessor:
                 logger.info(f"Sending HEAD request to: {url}")
                 head_response = await client.head(url)
                 logger.info(f"HEAD response status: {head_response.status_code}")
-                
+
                 content_type = head_response.headers.get('content-type', '')
                 content_length = head_response.headers.get('content-length')
-                
-                logger.info(f"Content-Type: {content_type}, Content-Length: {content_length}")
-                
+
+                # 提取纯 MIME 类型（去掉 charset 等参数）
+                mime_type = content_type.split(';')[0].strip() if content_type else ''
+
+                logger.info(f"Content-Type: {content_type}, MIME: {mime_type}, Content-Length: {content_length}")
+
+                # 检查是否是需要忽略的类型（CSS, JS, 字体等）
+                if mime_type.lower() in self.ignored_url_types:
+                    logger.info(f"Ignoring URL with type: {mime_type}")
+                    return None
+
                 # Check file size
                 if content_length and int(content_length) > self.max_file_size:
                     logger.warning(f"File too large: {content_length} bytes > {self.max_file_size} bytes")
                     return None
-                
+
                 # Download the file
                 logger.info(f"Starting GET request to download file")
                 response = await client.get(url)
                 logger.info(f"GET response status: {response.status_code}")
                 response.raise_for_status()
-                
+
                 # Check actual file size
                 actual_size = len(response.content)
                 logger.info(f"Downloaded {actual_size} bytes")
-                
+
                 if actual_size > self.max_file_size:
                     logger.warning(f"Downloaded file too large: {actual_size} bytes")
                     return None
-                
+
                 # Determine MIME type
-                if not content_type:
-                    content_type, _ = mimetypes.guess_type(url)
-                    if not content_type:
-                        # Default to binary if we can't determine the type
-                        content_type = 'application/octet-stream'
-                
-                logger.info(f"Final MIME type: {content_type}")
-                
+                if not mime_type:
+                    guessed_type, _ = mimetypes.guess_type(url)
+                    mime_type = guessed_type if guessed_type else 'application/octet-stream'
+
+                # 再次检查是否是需要忽略的类型
+                if mime_type.lower() in self.ignored_url_types:
+                    logger.info(f"Ignoring downloaded file with type: {mime_type}")
+                    return None
+
+                # 检查是否需要文本提取
+                if mime_type in self.text_extraction_types:
+                    extraction_type = self.text_extraction_types[mime_type]
+                    text_content = response.content.decode('utf-8', errors='ignore')
+
+                    extracted_text = self._extract_text_by_type(text_content, response.content, extraction_type)
+                    if extracted_text:
+                        # 返回纯文本类型
+                        return ADKInlineData(
+                            mimeType="text/plain",
+                            data=base64.b64encode(extracted_text.encode('utf-8')).decode('utf-8')
+                        )
+
+                logger.info(f"Final MIME type: {mime_type}")
+
                 # Convert to base64
                 base64_data = base64.b64encode(response.content).decode('utf-8')
                 logger.info(f"Converted to base64, length: {len(base64_data)}")
-                
+
                 return ADKInlineData(
-                    mimeType=content_type,
+                    mimeType=mime_type,
                     data=base64_data
                 )
-                
+
         except httpx.TimeoutException:
             logger.error(f"Timeout downloading URL: {url}")
             return None
@@ -700,4 +738,25 @@ class MultimodalProcessor:
             return None
         except Exception as e:
             logger.error(f"Error downloading URL {url}: {e}")
+            return None
+
+    def _extract_text_by_type(self, text_content: str, raw_content: bytes, extraction_type: str) -> Optional[str]:
+        """根据类型提取文本"""
+        try:
+            if extraction_type == "html":
+                return self.text_extractor.extract_from_html(text_content)
+            elif extraction_type == "markdown":
+                return self.text_extractor.extract_from_markdown(text_content)
+            elif extraction_type == "csv":
+                return self.text_extractor.extract_from_csv(raw_content)
+            elif extraction_type == "docx":
+                return self.text_extractor.extract_from_docx(raw_content)
+            elif extraction_type == "xlsx":
+                return self.text_extractor.extract_from_xlsx(raw_content)
+            elif extraction_type == "pptx":
+                return self.text_extractor.extract_from_pptx(raw_content)
+            else:
+                return text_content
+        except Exception as e:
+            logger.error(f"Failed to extract text: {e}")
             return None
