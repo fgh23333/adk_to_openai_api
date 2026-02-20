@@ -284,46 +284,55 @@ class MultimodalProcessor:
         
     def validate_file(self, file_data: bytes, filename: str, mime_type: str = None) -> Tuple[bool, str, str]:
         """
-        验证文件类型和大小
+        Validate file type and size.
         Returns: (is_valid, error_message, detected_mime_type)
         """
         try:
-            # 检测文件大小
             file_size = len(file_data)
-            
-            # 检测MIME类型
+            file_size_mb = file_size / (1024 * 1024)
+
+            # Detect MIME type
             if not mime_type:
                 mime_type = magic.from_buffer(file_data, mime=True)
-            
-            # 获取所有支持的类型
+
+            # Get all supported types
             all_supported_types = []
             for types in self.supported_types.values():
                 all_supported_types.extend(types)
-            
-            # 检查文件类型
+
+            # Check file type
             if mime_type not in all_supported_types:
-                return False, f"不支持的文件类型: {mime_type}", mime_type
-            
-            # 确定文件类别和大小限制
+                # Generate helpful error message with supported types
+                supported_list = ", ".join(sorted(set(t.split('/')[0] for t in all_supported_types)))
+                return False, (
+                    f"Unsupported file type '{mime_type}' for '{filename}'. "
+                    f"Supported categories: {supported_list}"
+                ), mime_type
+
+            # Determine category and size limit
             category = None
-            size_limit = self.max_file_size  # 默认限制
-            
+            size_limit = self.max_file_size
+
             for cat, types in self.supported_types.items():
                 if mime_type in types:
-                    category = cat.rstrip('s')  # 移除复数形式
+                    category = cat.rstrip('s')
                     size_limit = self.file_size_limits.get(category, self.max_file_size)
                     break
-            
-            # 检查文件大小
+
+            # Check file size
             if file_size > size_limit:
-                size_mb = size_limit / (1024 * 1024)
-                return False, f"文件大小超过限制 ({size_mb:.1f}MB)", mime_type
-            
+                size_limit_mb = size_limit / (1024 * 1024)
+                return False, (
+                    f"File '{filename}' is too large ({file_size_mb:.1f}MB). "
+                    f"Maximum size for {category or 'this'} files is {size_limit_mb:.0f}MB."
+                ), mime_type
+
+            logger.info(f"File validated: {filename} ({mime_type}, {file_size_mb:.2f}MB)")
             return True, "", mime_type
-            
+
         except Exception as e:
-            logger.error(f"文件验证失败: {e}")
-            return False, f"文件验证失败: {str(e)}", ""
+            logger.error(f"File validation failed: {e}")
+            return False, f"Failed to validate file '{filename}': {str(e)}", ""
 
     def process_base64_file(self, base64_data: str, filename: str, mime_type: str = None) -> Tuple[Optional[ADKInlineData], Optional[str]]:
         """
@@ -394,12 +403,15 @@ class MultimodalProcessor:
 
     async def process_content(self, content_parts: List[ContentPart]) -> Tuple[str, List[ADKPart]]:
         """
-        Process content parts, extracting text and handling multimodal content.
+        Process content parts with concurrent URL downloads.
         Supports: text, image_url, audio_url, video_url, input_audio, file
         Returns tuple of (combined_text, adk_parts)
         """
+        import asyncio
+
         text_parts = []
         adk_parts = []
+        download_tasks = []  # Collect all download tasks for concurrent execution
 
         logger.info(f"Starting multimodal processing for {len(content_parts)} content parts")
 
@@ -407,40 +419,75 @@ class MultimodalProcessor:
             logger.info(f"Processing content part {i}: type={part.type}")
 
             if part.type == "text" and part.text:
-                logger.info(f"Found text part: {part.text[:100]}...")
                 text_parts.append(part.text)
-                # Extract URLs from text for video/file processing
+                # Collect URLs from text for concurrent download
                 urls = self._extract_urls_from_text(part.text)
-                logger.info(f"Found {len(urls)} URLs in text: {urls}")
                 for url in urls:
-                    try:
-                        logger.info(f"Attempting to download URL: {url}")
-                        inline_data = await self._download_and_convert_url(url)
-                        if inline_data:
-                            logger.info(f"Successfully downloaded and converted URL: {inline_data.mimeType}")
-                            adk_parts.append(ADKPart(inlineData=inline_data))
-                        else:
-                            logger.warning(f"Failed to download URL: {url} - no data returned")
-                    except Exception as e:
-                        logger.error(f"Failed to process URL {url}: {e}")
+                    download_tasks.append(("url_from_text", url, None))
 
             elif part.type == "image_url" and part.image_url:
-                await self._process_image_url(part.image_url.url, adk_parts)
+                url = part.image_url.url
+                if url.startswith("data:"):
+                    # Base64 data - process immediately
+                    self._process_base64_inline(url, "image", adk_parts)
+                else:
+                    download_tasks.append(("image", url, None))
 
             elif part.type == "audio_url" and part.audio_url:
-                await self._process_audio_url(part.audio_url.url, adk_parts)
+                url = part.audio_url.url
+                if url.startswith("data:"):
+                    self._process_base64_inline(url, "audio", adk_parts)
+                else:
+                    download_tasks.append(("audio", url, None))
 
             elif part.type == "video_url" and part.video_url:
-                await self._process_video_url(part.video_url.url, adk_parts)
+                url = part.video_url.url
+                if url.startswith("data:"):
+                    self._process_base64_inline(url, "video", adk_parts)
+                else:
+                    download_tasks.append(("video", url, None))
 
             elif part.type == "input_audio" and part.input_audio:
                 self._process_input_audio(part.input_audio, adk_parts)
 
             elif part.type == "file" and part.file:
-                await self._process_file(part.file, adk_parts)
+                if part.file.data:
+                    # Process base64 data immediately
+                    inline_data, extracted_text = self.process_base64_file(
+                        part.file.data,
+                        part.file.filename or "file",
+                        part.file.mime_type
+                    )
+                    if inline_data:
+                        adk_parts.append(ADKPart(inlineData=inline_data))
+                    elif extracted_text:
+                        adk_parts.append(ADKPart(text=f"[File: {part.file.filename}]\n{extracted_text}"))
+                elif part.file.url:
+                    download_tasks.append(("file", part.file.url, part.file))
 
             else:
                 logger.warning(f"Unsupported content part type: {part.type}")
+
+        # Execute all downloads concurrently
+        if download_tasks:
+            logger.info(f"Starting concurrent download of {len(download_tasks)} URLs")
+            start_time = asyncio.get_event_loop().time()
+
+            tasks = [self._download_task(task_type, url, extra) for task_type, url, extra in download_tasks]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            elapsed = asyncio.get_event_loop().time() - start_time
+            logger.info(f"Concurrent download completed in {elapsed:.2f}s")
+
+            # Process results
+            for i, result in enumerate(results):
+                task_type, url, _ = download_tasks[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to download {url}: {result}")
+                elif result:
+                    adk_parts.append(result)
+                else:
+                    logger.warning(f"No data returned for {url}")
 
         # Combine all text parts
         combined_text = " ".join(text_parts)
@@ -448,6 +495,50 @@ class MultimodalProcessor:
         # Add text part if we have combined text
         if combined_text.strip():
             adk_parts.insert(0, ADKPart(text=combined_text))
+
+        return combined_text, adk_parts
+
+    def _process_base64_inline(self, url: str, content_type: str, adk_parts: List[ADKPart]):
+        """Process base64 data URL immediately (no download needed)."""
+        try:
+            mime_type = None
+            if ":" in url:
+                mime_type = url.split(":")[1].split(";")[0]
+
+            inline_data, extracted_text = self.process_base64_file(url, content_type, mime_type)
+            if inline_data:
+                adk_parts.append(ADKPart(inlineData=inline_data))
+            elif extracted_text:
+                adk_parts.append(ADKPart(text=extracted_text))
+        except Exception as e:
+            logger.error(f"Failed to process base64 data: {e}")
+
+    async def _download_task(self, task_type: str, url: str, extra) -> Optional[ADKPart]:
+        """Single download task for concurrent execution."""
+        try:
+            if task_type == "file" and extra:
+                # File download with potential text extraction
+                file_content = extra
+                inline_data = await self._download_and_convert_url(url)
+                if inline_data:
+                    if inline_data.mimeType in self.text_extraction_types:
+                        file_data = base64.b64decode(inline_data.data)
+                        extracted_text = self._extract_text_by_type(
+                            file_data.decode('utf-8', errors='ignore'),
+                            file_data,
+                            self.text_extraction_types[inline_data.mimeType]
+                        )
+                        if extracted_text:
+                            return ADKPart(text=f"[File from URL]\n{extracted_text}")
+                    return ADKPart(inlineData=inline_data)
+            else:
+                # Standard URL download
+                inline_data = await self._download_and_convert_url(url)
+                if inline_data:
+                    return ADKPart(inlineData=inline_data)
+        except Exception as e:
+            logger.error(f"Download task failed for {url}: {e}")
+        return None
 
         return combined_text, adk_parts
 

@@ -514,7 +514,86 @@ class ADKClient:
         # Create new session
         await self._ensure_session(app_name, user_id, session_id)
 
-    def _is_recoverable_error(self, status_code: int, response_text: str) -> bool:
+    # ============ Public API Methods ============
+
+    async def check_health(self) -> dict:
+        """
+        Check health status of ADK backend connection.
+        Returns dict with status and details.
+        """
+        result = {
+            "middleware": "healthy",
+            "adk_backend": "unknown",
+            "adk_host": self.adk_host,
+            "details": {}
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                start_time = time.time()
+                response = await client.get(f"{self.adk_host}/")
+                latency = (time.time() - start_time) * 1000  # ms
+
+                if response.status_code < 500:
+                    result["adk_backend"] = "healthy"
+                    result["details"]["latency_ms"] = round(latency, 2)
+                    result["details"]["status_code"] = response.status_code
+                else:
+                    result["adk_backend"] = "unhealthy"
+                    result["details"]["error"] = f"HTTP {response.status_code}"
+
+        except httpx.TimeoutException:
+            result["adk_backend"] = "timeout"
+            result["details"]["error"] = "Connection timeout"
+        except httpx.ConnectError as e:
+            result["adk_backend"] = "unreachable"
+            result["details"]["error"] = str(e)
+        except Exception as e:
+            result["adk_backend"] = "error"
+            result["details"]["error"] = str(e)
+
+        result["healthy"] = result["adk_backend"] == "healthy"
+        return result
+
+    async def delete_session(self, app_name: str, user_id: str, session_id: str) -> dict:
+        """
+        Delete a specific session.
+        Returns result dict.
+        """
+        success = await self._delete_session(app_name, user_id, session_id)
+        return {
+            "success": success,
+            "session_id": session_id,
+            "app_name": app_name,
+            "user_id": user_id
+        }
+
+    async def reset_session(self, app_name: str, user_id: str, session_id: str) -> dict:
+        """
+        Reset a session by deleting and recreating it.
+        Returns result dict.
+        """
+        await self._reset_session(app_name, user_id, session_id)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "app_name": app_name,
+            "user_id": user_id,
+            "action": "reset"
+        }
+
+    def list_cached_sessions(self) -> list:
+        """List all sessions in local cache."""
+        sessions = []
+        for session_key in self._session_cache:
+            parts = session_key.split(":")
+            if len(parts) == 3:
+                sessions.append({
+                    "app_name": parts[0],
+                    "user_id": parts[1],
+                    "session_id": parts[2]
+                })
+        return sessions
         """Check if an error is recoverable by resetting the session."""
         # Client errors (4xx) might be due to corrupted session state
         # Especially 400 Bad Request with multimodal content issues

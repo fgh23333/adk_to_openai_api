@@ -5,7 +5,8 @@
       "Bash(python:*)",
       "Bash(source:*)",
       "Bash(pip install:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(wc:*)"
     ]
   }
 }
