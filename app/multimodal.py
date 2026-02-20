@@ -225,13 +225,21 @@ class MultimodalProcessor:
             "documents": [
                 "application/pdf",
             ],
+            # Gemini 原生支持的文本类型（直接传递，不提取）
             "text": [
                 "text/plain",
                 "text/html",
+                "text/css",
+                "text/csv",
+                "text/xml",
+                "text/javascript",
+                "text/rtf",
                 "text/markdown",
                 "text/x-markdown",
-                "text/csv",
+                "application/json",
+                "application/xml",
             ],
+            # Office 文件需要提取文本（Gemini 不原生支持）
             "office": [
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
@@ -242,26 +250,20 @@ class MultimodalProcessor:
             ]
         }
 
-        # 需要忽略的 URL 资源类型（CSS, JS, 字体等）
+        # 需要忽略的 URL 资源类型（字体、图标等，Gemini 不支持）
         self.ignored_url_types = {
-            "text/css",
-            "text/javascript",
-            "application/javascript",
-            "application/x-javascript",
             "font/woff",
             "font/woff2",
             "font/ttf",
             "font/otf",
             "image/x-icon",
             "image/vnd.microsoft.icon",
+            "application/x-font-ttf",
+            "application/font-woff",
         }
 
-        # 需要提取文本的文件类型 -> 提取方法
+        # 需要提取文本的文件类型 -> 提取方法（仅 Office 文件）
         self.text_extraction_types = {
-            "text/html": "html",
-            "text/markdown": "markdown",
-            "text/x-markdown": "markdown",
-            "text/csv": "csv",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
