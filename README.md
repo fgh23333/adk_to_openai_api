@@ -1,70 +1,75 @@
 # ADK to OpenAI API Middleware
 
-A high-performance Python middleware service that converts Google Agent Development Kit (ADK) custom REST/SSE endpoints into OpenAI-compatible API format, enabling seamless integration with platforms like Dify, LangChain, and other LLM frameworks.
+将 Google Agent Development Kit (ADK) 的 REST API 转换为 OpenAI 兼容格式的高性能 Python 中间件，支持接入 Dify、ChatBox、LangChain 等 LLM 平台。
 
-## Overview
+## 功能特性
 
-This middleware acts as a protocol translation layer between ADK's custom API and the OpenAI Chat Completions API standard. It handles:
+### 核心功能
 
-- OpenAI-compatible `/v1/chat/completions` endpoint
-- Streaming and non-streaming response modes
-- Multimodal content processing (images, videos, documents)
-- Session management for ADK agents
-- API key authentication
+- **OpenAI API 兼容**: 完全兼容 OpenAI Chat Completions API 规范
+- **流式响应**: 支持 SSE 流式输出，模拟打字机效果
+- **多会话管理**: 支持通过 Header 或请求体区分不同会话
+- **可选认证**: Bearer Token API Key 认证
 
-## Architecture
+### 多模态支持
+
+| 类型 | 支持格式 | 处理方式 |
+|------|----------|----------|
+| **图片** | JPEG, PNG, GIF, WebP | 直接传递给 Gemini |
+| **视频** | MP4, MPEG, MOV, AVI, FLV, WebM, 3GP | 直接传递给 Gemini |
+| **音频** | MP3, WAV, FLAC, OGG, AAC, M4A, WebM | 直接传递给 Gemini |
+| **PDF** | application/pdf | 直接传递给 Gemini |
+| **Office** | DOCX, XLSX, PPTX | **提取文本**后传递 |
+| **文本** | TXT, HTML, Markdown, CSV | **提取纯文本**后传递 |
+
+### 文本提取
+
+对于 Office 文档和 HTML/Markdown，中间件会自动提取纯文本内容：
+
+- **HTML**: 移除标签、脚本、样式，提取纯文本
+- **Markdown**: 移除标记语法，提取纯文本
+- **DOCX**: 提取段落和表格文本
+- **XLSX**: 提取所有工作表内容
+- **PPTX**: 提取所有幻灯片文本
+- **CSV**: 格式化表格输出
+
+### 资源过滤
+
+自动忽略以下资源类型（不传递给 ADK）：
+- CSS 样式文件
+- JavaScript 文件
+- 字体文件 (WOFF, WOFF2, TTF, OTF)
+- 图标文件 (ICO)
+
+## 架构
 
 ```
-+----------------+     HTTP/SSE      +----------------+     HTTP/SSE      +----------------+
-|                |   ---------->    |                |   ---------->    |                |
-| LLM Platform   |                  | FastAPI        |                  | ADK Backend    |
-| (Dify, etc.)   |                  | Middleware     |                  |                |
-| OpenAI Format  |   <----------    | Protocol Layer |   <----------    | Custom API     |
-+----------------+     JSON/SSE      +----------------+     JSON/SSE      +----------------+
+┌─────────────────┐    OpenAI API    ┌─────────────────┐    ADK API     ┌─────────────────┐
+│                 │     Format       │                 │     Format     │                 │
+│  ChatBox/Dify   │  ─────────────>  │   Middleware    │  ────────────> │   ADK Backend   │
+│                 │                  │                 │                │                 │
+│                 │  <─────────────  │   - 格式转换     │  <────────────  │   (Gemini)      │
+│                 │    JSON/SSE      │   - 文本提取     │    JSON/SSE    │                 │
+└─────────────────┘                  │   - 会话管理     │                └─────────────────┘
+                                     └─────────────────┘
 ```
 
-## Features
+## 快速开始
 
-### Core Capabilities
-
-- **OpenAI API Compatibility**: Full compatibility with OpenAI Chat Completions API specification
-- **Streaming Support**: SSE-based streaming responses with simulated typewriter effect
-- **Multimodal Processing**:
-  - Image processing (JPEG, PNG, GIF, WebP, BMP, SVG)
-  - Document handling (PDF, Word, Excel, PowerPoint)
-  - Video and audio file support
-  - Base64 encoding and URL download
-- **Session Management**: Automatic ADK session creation and lifecycle management
-- **Authentication**: Optional Bearer token API key authentication
-- **File Upload**: Direct file upload endpoint with validation
-
-### API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/chat/completions` | POST | Create chat completion (streaming/non-streaming) |
-| `/v1/models` | GET | List available ADK agent models |
-| `/v1/health` | GET | Health check endpoint |
-| `/upload` | POST | Upload file and convert to Base64 |
-
-## Quick Start
-
-### Prerequisites
+### 环境要求
 
 - Python 3.8+
-- ADK backend service running
-- 2GB+ RAM recommended
+- ADK 后端服务 (运行中)
+- 推荐 2GB+ 内存
 
-### Installation
+### 安装
 
-1. Clone the repository:
 ```bash
+# 克隆项目
 git clone <repository-url>
 cd adk_to_openai_api
-```
 
-2. Create a virtual environment:
-```bash
+# 创建虚拟环境
 python -m venv .venv
 
 # Windows
@@ -72,279 +77,314 @@ python -m venv .venv
 
 # Linux/Mac
 source .venv/bin/activate
-```
 
-3. Install dependencies:
-```bash
+# 安装依赖
 pip install -r requirements.txt
 ```
 
-4. Configure environment variables (optional):
+### 配置
+
+创建 `.env` 文件（可选）：
+
 ```bash
-# Create .env file
+# ADK 后端配置
 ADK_HOST=http://localhost:8000
 ADK_APP_NAME=agent
+
+# 服务配置
 PORT=8080
 LOG_LEVEL=INFO
+
+# 文件限制
+MAX_FILE_SIZE_MB=20
+DOWNLOAD_TIMEOUT=30
+
+# 认证（可选）
 REQUIRE_API_KEY=false
+API_KEYS=sk-key1,sk-key2
 ```
 
-5. Start the server:
+### 启动
+
 ```bash
-# Development mode
+# 开发模式
 python main.py
 
-# Or with uvicorn directly
+# 使用 uvicorn
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
-# Production mode
+# 生产模式
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 4
 ```
 
-## Configuration
+## API 端点
 
-### Environment Variables
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/chat/completions` | POST | 聊天补全（支持流式/非流式） |
+| `/v1/models` | GET | 获取可用模型列表 |
+| `/v1/health` | GET | 健康检查 |
+| `/upload` | POST | 文件上传并转换为 Base64 |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ADK_HOST` | `http://localhost:8000` | ADK backend service URL |
-| `ADK_APP_NAME` | `agent` | Default ADK agent/APP name |
-| `PORT` | `8080` | Middleware service port |
-| `LOG_LEVEL` | `INFO` | Logging level (DEBUG/INFO/WARNING/ERROR) |
-| `MAX_FILE_SIZE_MB` | `20` | Maximum file size for uploads |
-| `DOWNLOAD_TIMEOUT` | `30` | URL download timeout (seconds) |
-| `REQUIRE_API_KEY` | `false` | Enable API key authentication |
-| `API_KEYS` | (empty) | Comma-separated list of valid API keys |
+## 多会话支持
 
-### Platform Configuration
+通过以下方式区分不同会话：
 
-#### Dify
+### 方式 1: 请求头 X-Session-ID（推荐）
 
-1. Navigate to Settings > Model Providers
-2. Add OpenAI API-compatible provider
-3. Configure:
-   - **API Base URL**: `http://your-middleware-host:8080/v1`
-   - **API Key**: Your configured API key (if enabled)
-   - **Model Name**: Matches your ADK `appName`
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "X-Session-ID: conversation_123" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "agent", "messages": [...]}'
+```
 
-#### Other OpenAI-Compatible Platforms
+### 方式 2: 请求头 X-User-ID
 
-Use the same configuration pattern with:
-- Base URL: `http://localhost:8080/v1`
-- API Key: As configured
-- Model: Your ADK agent name
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "X-User-ID: user_abc" \
+  ...
+```
 
-## API Usage
+### 方式 3: 请求体 user 字段
 
-### Chat Completions
+```json
+{
+  "model": "agent",
+  "user": "conversation_456",
+  "messages": [...]
+}
+```
 
-**Request** (curl):
+> **注意**: 如果不指定任何会话标识，每次请求都会创建新会话。
+
+## 使用示例
+
+### 基本对话
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-adk-middleware-key" \
   -d '{
     "model": "agent",
-    "messages": [
-      {
-        "role": "user",
-        "content": "Hello, how can you help me?"
-      }
-    ],
+    "messages": [{"role": "user", "content": "你好"}],
     "stream": false
   }'
 ```
 
-**Request** (with image):
+### 带图片的消息
+
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "agent",
-    "messages": [
-      {
-        "role": "user",
-        "content": [
-          {
-            "type": "text",
-            "text": "Describe this image"
-          },
-          {
-            "type": "image_url",
-            "image_url": {
-              "url": "https://example.com/image.jpg"
-            }
-          }
-        ]
-      }
-    ],
-    "stream": true
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "描述这张图片"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+      ]
+    }]
   }'
 ```
 
-**Response** (non-streaming):
+### 带音频的消息
+
+```json
+{
+  "model": "agent",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "这段音频说了什么？"},
+      {"type": "audio_url", "audio_url": {"url": "https://example.com/audio.mp3"}}
+    ]
+  }]
+}
+```
+
+### OpenAI 格式音频
+
+```json
+{
+  "model": "agent",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "input_audio", "input_audio": {"data": "base64...", "format": "mp3"}}
+    ]
+  }]
+}
+```
+
+### 带文档的消息（自动提取文本）
+
+```json
+{
+  "model": "agent",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "总结这个文档"},
+      {"type": "file", "file": {"url": "https://example.com/document.docx"}}
+    ]
+  }]
+}
+```
+
+### 响应格式
+
+**非流式响应**:
 ```json
 {
   "id": "chatcmpl-1234567890",
   "object": "chat.completion",
   "created": 1234567890,
   "model": "agent",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Hello! I'm here to help you..."
-      },
-      "finish_reason": "stop"
-    }
-  ]
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "你好！有什么可以帮助你的？"},
+    "finish_reason": "stop"
+  }]
 }
 ```
 
-**Response** (streaming):
+**流式响应**:
 ```
-data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"agent","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"agent","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
-
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","choices":[{"delta":{"content":"你"}}]}
+data: {"id":"chatcmpl-123","object":"chat.completion.chunk","choices":[{"delta":{"content":"好"}}]}
 data: [DONE]
 ```
 
-### List Models
+## 平台配置
 
-```bash
-curl http://localhost:8080/v1/models
-```
+### ChatBox
 
-**Response**:
-```json
-{
-  "object": "list",
-  "data": [
-    {
-      "id": "agent",
-      "object": "model",
-      "created": 1234567890,
-      "owned_by": "adk"
-    }
-  ]
-}
-```
+1. 设置 > 模型提供方 > 添加 OpenAI 兼容 API
+2. 配置：
+   - **API 地址**: `http://your-host:8080/v1`
+   - **API Key**: 配置的密钥（如启用）
+   - **模型**: 对应 ADK 的 `appName`
 
-### File Upload
+### Dify
 
-```bash
-curl -X POST http://localhost:8080/upload \
-  -H "Authorization: Bearer sk-adk-middleware-key" \
-  -F "file=@/path/to/file.jpg"
-```
+1. 设置 > 模型供应商 > 添加 OpenAI API 兼容供应商
+2. 配置：
+   - **API Base URL**: `http://your-host:8080/v1`
+   - **API Key**: 配置的密钥（如启用）
+   - **模型名称**: 对应 ADK 的 `appName`
 
-**Response**:
-```json
-{
-  "success": true,
-  "filename": "file.jpg",
-  "mime_type": "image/jpeg",
-  "base64_data": "/9j/4AAQSkZJRg...",
-  "size": 12345
-}
-```
-
-## Project Structure
+## 项目结构
 
 ```
 adk_to_openai_api/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py           # FastAPI application and endpoints
-│   ├── adk_client.py     # ADK backend client
-│   ├── multimodal.py     # Multimodal content processor
-│   ├── models.py         # Pydantic data models
-│   ├── config.py         # Configuration management
-│   └── auth.py           # API key authentication
-├── main.py               # Application entry point
-├── requirements.txt      # Python dependencies
-└── README.md            # This file
+│   ├── main.py           # FastAPI 应用和端点
+│   ├── adk_client.py     # ADK 后端客户端
+│   ├── multimodal.py     # 多模态内容处理器
+│   ├── models.py         # Pydantic 数据模型
+│   ├── config.py         # 配置管理
+│   └── auth.py           # API Key 认证
+├── main.py               # 应用入口
+├── requirements.txt      # Python 依赖
+└── README.md
 ```
 
-## How It Works
+## 处理流程
 
-### Request Flow
+```
+请求到达
+    │
+    ▼
+┌─────────────────┐
+│ 认证验证        │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 会话标识处理    │ ← X-Session-ID / X-User-ID / user 字段
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 多模态处理      │
+│  - 图片/视频/音频 → 直接传递
+│  - Office/HTML  → 提取文本
+│  - CSS/JS/字体  → 自动忽略
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 格式转换        │ ← OpenAI → ADK
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 确保 Session    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 调用 ADK 后端   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 响应转换        │ ← ADK → OpenAI
+└────────┬────────┘
+         │
+         ▼
+返回响应（JSON/SSE）
+```
 
-1. **Receive Request**: FastAPI receives OpenAI-format request
-2. **Validate**: Authentication and request validation
-3. **Transform**: Convert OpenAI format to ADK format
-4. **Multimodal Processing**: Download/convert images and files to Base64
-5. **ADK Session**: Ensure ADK session exists for the user
-6. **Call ADK**: Forward request to ADK backend
-7. **Transform Response**: Convert ADK response to OpenAI format
-8. **Stream**: Optionally chunk response for streaming
+## 故障排除
 
-### Key Components
+### ADK 连接失败
 
-- **ADKClient** (`adk_client.py`): Handles communication with ADK backend
-- **MultimodalProcessor** (`multimodal.py`): Processes images, files, and URLs
-- **APIKeyAuth** (`auth.py`): Manages Bearer token authentication
-- **Models** (`models.py`): Pydantic models for request/response validation
-
-## Troubleshooting
-
-### Common Issues
-
-**ADK Connection Failed**
 ```
 ERROR: ADK HTTP error: 503 - Service Unavailable
 ```
-Solution: Verify ADK backend is running and `ADK_HOST` is correct.
 
-**Image Processing Failed**
-```
-WARNING: Failed to process image URL: timeout
-```
-Solution: Check URL accessibility, network connectivity, or increase `DOWNLOAD_TIMEOUT`.
+**解决**: 检查 ADK 后端是否运行，`ADK_HOST` 配置是否正确。
 
-**Session Already Exists**
-```
-INFO: ADK session already exists: session_xxx
-```
-This is informational - the middleware handles existing sessions automatically.
+### 文件类型不支持
 
-### Debug Mode
+```
+WARNING: 不支持的文件类型: application/xxx
+```
 
-Enable detailed logging:
+**解决**: 该文件类型不在支持列表中，会自动跳过。如需支持，可在 `multimodal.py` 中添加。
+
+### 多模态处理超时
+
+```
+WARNING: Failed to process URL: timeout
+```
+
+**解决**: 增加 `DOWNLOAD_TIMEOUT` 配置值。
+
+### 调试模式
+
 ```bash
 LOG_LEVEL=DEBUG python main.py
 ```
 
-Or with uvicorn:
-```bash
-python -m uvicorn app.main:app --log-level debug
-```
+## 配置参考
 
-## Development
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ADK_HOST` | `http://localhost:8000` | ADK 后端地址 |
+| `ADK_APP_NAME` | `agent` | 默认 ADK agent 名称 |
+| `PORT` | `8080` | 服务端口 |
+| `LOG_LEVEL` | `INFO` | 日志级别 |
+| `MAX_FILE_SIZE_MB` | `20` | 最大文件大小 |
+| `DOWNLOAD_TIMEOUT` | `30` | URL 下载超时（秒） |
+| `REQUIRE_API_KEY` | `false` | 是否启用 API Key |
+| `API_KEYS` | (空) | 有效的 API Key 列表 |
 
-### Running Tests
+## 许可证
 
-```bash
-# Run all tests
-pytest tests/
-
-# Run with coverage
-pytest --cov=app tests/
-```
-
-### Adding Features
-
-1. **New endpoints**: Add to `app/main.py`
-2. **New models**: Define in `app/models.py`
-3. **ADK operations**: Extend `app/adk_client.py`
-4. **Content processing**: Extend `app/multimodal.py`
-
-## License
-
-MIT License - see LICENSE file for details
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+MIT License - 详见 LICENSE 文件
