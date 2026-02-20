@@ -15,29 +15,26 @@
 
 | 类型 | 支持格式 | 处理方式 |
 |------|----------|----------|
-| **图片** | JPEG, PNG, GIF, WebP | 直接传递给 Gemini |
-| **视频** | MP4, MPEG, MOV, AVI, FLV, WebM, 3GP | 直接传递给 Gemini |
-| **音频** | MP3, WAV, FLAC, OGG, AAC, M4A, WebM | 直接传递给 Gemini |
-| **PDF** | application/pdf | 直接传递给 Gemini |
-| **Office** | DOCX, XLSX, PPTX | **提取文本**后传递 |
-| **文本** | TXT, HTML, Markdown, CSV | **提取纯文本**后传递 |
+| **图片** | JPEG, PNG, GIF, WebP | 直接传递 |
+| **视频** | MP4, MPEG, MOV, AVI, FLV, WebM, 3GP | 直接传递 |
+| **音频** | MP3, WAV, FLAC, OGG, AAC, M4A, WebM | 直接传递 |
+| **PDF** | application/pdf | 直接传递 |
+| **文本** | TXT, HTML, CSS, CSV, XML, RTF, JavaScript, Markdown, JSON | 直接传递 |
+| **Office** | DOCX, XLSX, PPTX, DOC, XLS, PPT | **提取文本**后传递 |
 
 ### 文本提取
 
-对于 Office 文档和 HTML/Markdown，中间件会自动提取纯文本内容：
+Gemini 原生支持 HTML、CSS、JavaScript、JSON、XML、CSV、RTF、Markdown 等格式，这些会直接传递。
 
-- **HTML**: 移除标签、脚本、样式，提取纯文本
-- **Markdown**: 移除标记语法，提取纯文本
+仅对 **Office 文档**自动提取纯文本：
+
 - **DOCX**: 提取段落和表格文本
 - **XLSX**: 提取所有工作表内容
 - **PPTX**: 提取所有幻灯片文本
-- **CSV**: 格式化表格输出
 
 ### 资源过滤
 
-自动忽略以下资源类型（不传递给 ADK）：
-- CSS 样式文件
-- JavaScript 文件
+自动忽略以下资源类型（Gemini 不支持）：
 - 字体文件 (WOFF, WOFF2, TTF, OTF)
 - 图标文件 (ICO)
 
@@ -77,7 +74,7 @@ python -m venv .venv
 
 # Linux/Mac
 source .venv/bin/activate
-
+```
 # 安装依赖
 pip install -r requirements.txt
 ```
