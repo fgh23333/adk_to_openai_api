@@ -222,6 +222,124 @@ docker inspect --format='{{.State.Health.Status}}' adk-middleware
 | `/v1/sessions/{session_id}` | DELETE | 删除指定 session |
 | `/v1/sessions/{session_id}/reset` | POST | 重置 session（删除并重建） |
 
+#### 会话记录
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/sessions/{session_id}/history` | GET | 获取会话历史记录 |
+| `/v1/sessions/{session_id}/export` | GET | 导出会话（支持 json/markdown） |
+| `/v1/sessions/{session_id}/history` | DELETE | 删除会话历史 |
+| `/v1/history/search?q=xxx` | GET | 搜索消息内容 |
+| `/v1/history/stats` | GET | 获取统计信息 |
+| `/v1/history/cleanup?days=30` | POST | 清理旧记录 |
+
+## 会话记录
+
+### 功能说明
+
+自动记录所有对话历史到 SQLite 数据库：
+- 记录用户消息和助手响应
+- 支持流式和非流式请求
+- 记录延迟时间和模型信息
+
+### 配置
+
+```bash
+# .env
+SESSION_HISTORY_ENABLED=true     # 启用会话记录
+DATABASE_PATH=data/sessions.db   # 数据库路径
+```
+
+### 数据来源说明
+
+`/v1/sessions` 端点的数据来源取决于是否启用会话记录：
+
+| SESSION_HISTORY_ENABLED | 数据来源 | 说明 |
+|------------------------|---------|------|
+| `true` | 数据库 | 返回有历史记录的 sessions |
+| `false` | ADK 缓存 | 返回 ADK 后端缓存的 sessions |
+
+**注意**：启用会话记录后，`/v1/sessions` 返回的 `session_id` 可以直接用于 `/v1/sessions/{session_id}/history` 查询。
+
+### 获取会话历史
+
+```bash
+# 获取最近 100 条消息
+curl http://localhost:8080/v1/sessions/user_123/history
+
+# 分页获取
+curl "http://localhost:8080/v1/sessions/user_123/history?limit=50&offset=0"
+```
+
+### 导出会话
+
+```bash
+# 导出为 JSON
+curl http://localhost:8080/v1/sessions/user_123/export
+
+# 导出为 Markdown
+curl "http://localhost:8080/v1/sessions/user_123/export?format=markdown"
+```
+
+导出的 Markdown 格式：
+
+```markdown
+# Session: user_123
+
+- Created: 2024-01-20 10:30:00
+- Messages: 10
+
+## Conversation
+
+**USER:** 你好
+
+**ASSISTANT:** 你好！有什么可以帮助你的？
+
+...
+```
+
+### 搜索消息
+
+```bash
+# 搜索包含"关键词"的消息
+curl "http://localhost:8080/v1/history/search?q=关键词"
+
+# 在特定会话中搜索
+curl "http://localhost:8080/v1/history/search?q=关键词&session_id=user_123"
+```
+
+### 统计信息
+
+```bash
+curl http://localhost:8080/v1/history/stats
+```
+
+```json
+{
+  "enabled": true,
+  "total_sessions": 5,
+  "total_messages": 42,
+  "messages_by_role": {
+    "user": 21,
+    "assistant": 21
+  },
+  "recent_messages_24h": 10
+}
+```
+
+### 清理旧记录
+
+```bash
+# 删除 30 天前的会话记录
+curl -X POST "http://localhost:8080/v1/history/cleanup?days=30"
+```
+
+### 隐私说明
+
+- 数据存储在本地 SQLite 数据库
+- 不会上传到任何服务器
+- 可随时删除历史记录
+
 ## 健康检查
 
 ### 基础检查

@@ -68,12 +68,24 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
 # Initialize ADK client
 adk_client = ADKClient()
 
+# Initialize database
+from app.database import init_database, get_database
+db = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global db
     # Startup
     logger.info("ADK Middleware starting up...")
+
+    # Initialize database
+    if settings.session_history_enabled:
+        db = init_database(settings.database_path)
+        logger.info(f"Session history database initialized: {settings.database_path}")
+
     yield
+
     # Shutdown - close HTTP client
     logger.info("ADK Middleware shutting down...")
     await adk_client.close()
@@ -462,8 +474,9 @@ async def create_chat_completion(
         raise HTTPException(status_code=400, detail="Last message must be from user")
 
     if request.stream:
+        # For streaming, wrap the generator to save history after completion
         return StreamingResponse(
-            adk_client.create_chat_completion_stream(request),
+            _stream_with_history(request),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -473,9 +486,135 @@ async def create_chat_completion(
             }
         )
     else:
+        start_time = time.time()
         response = await adk_client.create_chat_completion(request)
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        # Save to history
+        if settings.session_history_enabled and db:
+            _save_message_to_history(
+                session_id=request.user,
+                user_id=request.user,
+                request=request,
+                response=response,
+                latency_ms=latency_ms
+            )
+
         logger.info(f"Chat response generated for user: {request.user}")
         return response
+
+
+async def _stream_with_history(request: ChatCompletionRequest):
+    """Wrapper generator that saves history after streaming completes."""
+    start_time = time.time()
+    full_content = ""
+    request_id = get_request_id()
+
+    async for chunk in adk_client.create_chat_completion_stream(request):
+        # Extract content from chunk for history
+        if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+            try:
+                data = json.loads(chunk[6:])
+                if data.get("choices"):
+                    delta = data["choices"][0].get("delta", {})
+                    content = delta.get("content", "")
+                    full_content += content
+            except:
+                pass
+
+        yield chunk
+
+    # Save to history after streaming completes
+    latency_ms = int((time.time() - start_time) * 1000)
+
+    if settings.session_history_enabled and db and full_content:
+        try:
+            # Save user message
+            user_content = ""
+            if request.messages and request.messages[-1]:
+                last_msg = request.messages[-1]
+                if isinstance(last_msg.content, str):
+                    user_content = last_msg.content
+                elif isinstance(last_msg.content, list):
+                    for part in last_msg.content:
+                        if hasattr(part, 'text') and part.text:
+                            user_content += part.text
+
+            db.save_message(
+                session_id=request.user,
+                user_id=request.user,
+                app_name=settings.adk_app_name,
+                role="user",
+                content=user_content,
+                request_id=request_id
+            )
+
+            # Save assistant message
+            db.save_message(
+                session_id=request.user,
+                user_id=request.user,
+                app_name=settings.adk_app_name,
+                role="assistant",
+                content=full_content,
+                request_id=request_id,
+                model=request.model,
+                latency_ms=latency_ms
+            )
+        except Exception as e:
+            logger.error(f"Failed to save streaming history: {e}")
+
+
+def _save_message_to_history(
+    session_id: str,
+    user_id: str,
+    request: ChatCompletionRequest,
+    response: ChatCompletionResponse,
+    latency_ms: int
+):
+    """Save request and response to history."""
+    try:
+        request_id = get_request_id()
+
+        # Extract user message content
+        user_content = ""
+        if request.messages and request.messages[-1]:
+            last_msg = request.messages[-1]
+            if isinstance(last_msg.content, str):
+                user_content = last_msg.content
+            elif isinstance(last_msg.content, list):
+                for part in last_msg.content:
+                    if hasattr(part, 'text') and part.text:
+                        user_content += part.text
+
+        # Save user message
+        db.save_message(
+            session_id=session_id,
+            user_id=user_id,
+            app_name=settings.adk_app_name,
+            role="user",
+            content=user_content[:10000],  # Limit content length
+            request_id=request_id
+        )
+
+        # Extract assistant response content
+        assistant_content = ""
+        if response.choices and response.choices[0].message:
+            assistant_content = response.choices[0].message.content or ""
+
+        # Save assistant message
+        db.save_message(
+            session_id=session_id,
+            user_id=user_id,
+            app_name=settings.adk_app_name,
+            role="assistant",
+            content=assistant_content[:10000],
+            request_id=request_id,
+            model=request.model,
+            latency_ms=latency_ms
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to save message to history: {e}")
 
 
 @app.get("/v1/models")
@@ -508,12 +647,23 @@ async def health_check_detailed() -> dict:
 async def list_sessions(
     api_key_valid: bool = Depends(verify_api_key_dependency)
 ) -> dict:
-    """List all cached sessions."""
-    sessions = adk_client.list_cached_sessions()
-    return {
-        "count": len(sessions),
-        "sessions": sessions
-    }
+    """List all sessions (from database if history enabled, otherwise from ADK cache)."""
+    if settings.session_history_enabled and db:
+        # Return sessions from database
+        sessions = db.list_sessions(limit=100)
+        return {
+            "source": "database",
+            "count": len(sessions),
+            "sessions": sessions
+        }
+    else:
+        # Return sessions from ADK cache
+        sessions = adk_client.list_cached_sessions()
+        return {
+            "source": "adk_cache",
+            "count": len(sessions),
+            "sessions": sessions
+        }
 
 
 @app.delete("/v1/sessions/{session_id}")
@@ -561,6 +711,175 @@ async def reset_session(
     logger.info(f"Reset session request: {session_id} (app={app_name}, user={user_id})")
     result = await adk_client.reset_session(app_name, user_id, session_id)
     return result
+
+
+# ============ Session History API ============
+
+@app.get("/v1/sessions/{session_id}/history")
+async def get_session_history(
+    session_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    Get message history for a session.
+
+    Parameters:
+    - session_id: The session ID
+    - limit: Maximum number of messages to return (default 100)
+    - offset: Number of messages to skip (default 0)
+    """
+    if not settings.session_history_enabled or not db:
+        raise HTTPException(status_code=503, detail="Session history is not enabled")
+
+    session_info = db.get_session_info(session_id)
+    if not session_info:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    messages = db.get_session_history(session_id, limit=limit, offset=offset)
+
+    return {
+        "session_id": session_id,
+        "session_info": session_info,
+        "messages": messages,
+        "count": len(messages)
+    }
+
+
+@app.get("/v1/sessions/{session_id}/export")
+async def export_session(
+    session_id: str,
+    format: str = "json",
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    Export a session's complete history.
+
+    Parameters:
+    - session_id: The session ID
+    - format: Export format (json or markdown)
+    """
+    if not settings.session_history_enabled or not db:
+        raise HTTPException(status_code=503, detail="Session history is not enabled")
+
+    session_info = db.get_session_info(session_id)
+    if not session_info:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    messages = db.get_session_history(session_id, limit=10000)
+
+    if format == "markdown":
+        # Generate markdown format
+        lines = [f"# Session: {session_id}", ""]
+        lines.append(f"- Created: {session_info['created_at']}")
+        lines.append(f"- Messages: {session_info['message_count']}")
+        lines.append("")
+        lines.append("## Conversation")
+        lines.append("")
+
+        for msg in messages:
+            role = msg['role'].upper()
+            content = msg['content'] or ''
+            lines.append(f"**{role}:** {content}")
+            lines.append("")
+
+        return {
+            "format": "markdown",
+            "content": "\n".join(lines)
+        }
+    else:
+        return {
+            "format": "json",
+            "session_info": session_info,
+            "messages": messages
+        }
+
+
+@app.delete("/v1/sessions/{session_id}/history")
+async def delete_session_history(
+    session_id: str,
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    Delete all history for a session.
+
+    This will remove all message records but keep the session active in ADK.
+    """
+    if not settings.session_history_enabled or not db:
+        raise HTTPException(status_code=503, detail="Session history is not enabled")
+
+    deleted_count = db.delete_session_history(session_id)
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "deleted_messages": deleted_count
+    }
+
+
+@app.get("/v1/history/search")
+async def search_history(
+    q: str,
+    session_id: str = None,
+    limit: int = 50,
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    Search messages across all sessions.
+
+    Parameters:
+    - q: Search query
+    - session_id: Limit to specific session (optional)
+    - limit: Maximum results (default 50)
+    """
+    if not settings.session_history_enabled or not db:
+        raise HTTPException(status_code=503, detail="Session history is not enabled")
+
+    results = db.search_messages(q, session_id=session_id, limit=limit)
+
+    return {
+        "query": q,
+        "count": len(results),
+        "results": results
+    }
+
+
+@app.get("/v1/history/stats")
+async def get_history_stats(
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """Get session history statistics."""
+    if not settings.session_history_enabled or not db:
+        return {"enabled": False}
+
+    stats = db.get_stats()
+    stats["enabled"] = True
+    stats["database_path"] = settings.database_path
+    return stats
+
+
+@app.post("/v1/history/cleanup")
+async def cleanup_history(
+    days: int = 30,
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    Clean up old session history.
+
+    Parameters:
+    - days: Delete sessions older than this many days (default 30)
+    """
+    if not settings.session_history_enabled or not db:
+        raise HTTPException(status_code=503, detail="Session history is not enabled")
+
+    deleted_count = db.cleanup_old_sessions(days=days)
+
+    return {
+        "success": True,
+        "deleted_sessions": deleted_count,
+        "older_than_days": days
+    }
 
 
 @app.post("/upload")

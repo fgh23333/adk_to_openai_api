@@ -7,7 +7,8 @@
       "Bash(pip install:*)",
       "Bash(curl:*)",
       "Bash(wc:*)",
-      "Bash(docker build:*)"
+      "Bash(docker build:*)",
+      "Bash(__NEW_LINE_fd46d64e31812d5f__ echo \"\")"
     ]
   }
 }
