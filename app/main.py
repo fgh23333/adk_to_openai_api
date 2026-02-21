@@ -5,12 +5,12 @@ import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, Depends, UploadFile, File, Header
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Annotated
 
 from app.config import settings
 from app.models import (
@@ -71,17 +71,138 @@ adk_client = ADKClient()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup
     logger.info("ADK Middleware starting up...")
     yield
+    # Shutdown - close HTTP client
     logger.info("ADK Middleware shutting down...")
+    await adk_client.close()
 
+
+# OpenAPI examples
+openapi_examples = {
+    "simple_text": {
+        "summary": "简单文本对话",
+        "description": "发送简单的文本消息",
+        "value": {
+            "model": "agent",
+            "messages": [{"role": "user", "content": "你好，请介绍一下你自己"}],
+            "stream": False
+        }
+    },
+    "with_image": {
+        "summary": "带图片的消息",
+        "description": "发送图片请求分析",
+        "value": {
+            "model": "agent",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "请描述这张图片"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+                ]
+            }],
+            "stream": True
+        }
+    },
+    "with_audio": {
+        "summary": "带音频的消息",
+        "description": "发送音频请求转录或分析",
+        "value": {
+            "model": "agent",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "这段音频说了什么？"},
+                    {"type": "audio_url", "audio_url": {"url": "https://example.com/audio.mp3"}}
+                ]
+            }]
+        }
+    },
+    "with_document": {
+        "summary": "带文档的消息",
+        "description": "发送文档请求分析（自动提取文本）",
+        "value": {
+            "model": "agent",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "请总结这个文档的内容"},
+                    {"type": "file", "file": {"url": "https://example.com/document.docx"}}
+                ]
+            }]
+        }
+    },
+    "multi_modal": {
+        "summary": "多模态消息",
+        "description": "同时发送多个模态的内容",
+        "value": {
+            "model": "agent",
+            "user": "session_123",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "对比这些内容"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/image1.jpg"}},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/image2.jpg"}}
+                ]
+            }],
+            "stream": True
+        }
+    }
+}
+
+# Security scheme for Swagger UI
+security_scheme = {
+    "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "API Key 认证，格式: Bearer sk-your-api-key"
+    }
+}
 
 # Create FastAPI app
 app = FastAPI(
     title="ADK Middleware API",
-    description="Middleware API for exposing Google ADK agents as OpenAI-compatible Chat Completion endpoints",
-    version="1.1.0",
-    lifespan=lifespan
+    description="""
+## 概述
+
+将 Google ADK Agent 转换为 OpenAI 兼容的 Chat Completions API。
+
+## 功能特性
+
+- ✅ **多模态支持**: 图片、视频、音频、PDF、Office文档
+- ✅ **流式响应**: 真正的 SSE 流式输出
+- ✅ **多会话管理**: 通过 X-Session-ID 区分会话
+- ✅ **并发优化**: URL 并发下载、连接池复用
+
+## 认证
+
+如果启用了 API Key 认证，请点击右上角 🔓 **Authorize** 按钮输入 API Key。
+
+格式: `Bearer sk-your-api-key`
+
+## 多会话支持
+
+通过以下方式区分不同会话：
+- 请求头 `X-Session-ID`
+- 请求头 `X-User-ID`
+- 请求体 `user` 字段
+""",
+    version="1.2.0",
+    lifespan=lifespan,
+    contact={
+        "name": "ADK Middleware",
+    },
+    license_info={
+        "name": "MIT",
+    },
+    openapi={
+        "components": {
+            "securitySchemes": security_scheme
+        }
+    },
 )
 
 # Add middlewares
@@ -212,16 +333,113 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-@app.post("/v1/chat/completions")
+@app.post(
+    "/v1/chat/completions",
+    openapi_extra={
+        "security": [{"BearerAuth": []}],
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "simple": {
+                            "summary": "简单文本对话",
+                            "value": {
+                                "model": "agent",
+                                "messages": [{"role": "user", "content": "你好"}]
+                            }
+                        },
+                        "streaming": {
+                            "summary": "流式响应",
+                            "value": {
+                                "model": "agent",
+                                "messages": [{"role": "user", "content": "请详细介绍一下"}],
+                                "stream": True
+                            }
+                        },
+                        "with_image": {
+                            "summary": "带图片",
+                            "value": {
+                                "model": "agent",
+                                "messages": [{
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": "描述这张图片"},
+                                        {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+                                    ]
+                                }]
+                            }
+                        },
+                        "with_audio": {
+                            "summary": "带音频",
+                            "value": {
+                                "model": "agent",
+                                "messages": [{
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": "这段音频说了什么"},
+                                        {"type": "audio_url", "audio_url": {"url": "https://example.com/audio.mp3"}}
+                                    ]
+                                }]
+                            }
+                        },
+                        "with_session": {
+                            "summary": "指定会话",
+                            "value": {
+                                "model": "agent",
+                                "user": "my_session_123",
+                                "messages": [{"role": "user", "content": "继续之前的对话"}]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
 async def create_chat_completion(
     request: ChatCompletionRequest,
     http_request: Request,
-    api_key_valid: bool = Depends(verify_api_key_dependency)
+    api_key_valid: bool = Depends(verify_api_key_dependency),
+    x_session_id: Annotated[Optional[str], Header(description="会话 ID，用于区分不同会话")] = None,
+    x_user_id: Annotated[Optional[str], Header(description="用户 ID，用于区分不同用户")] = None,
+    x_request_id: Annotated[Optional[str], Header(description="请求 ID，用于追踪请求")] = None,
 ):
-    """Create a chat completion (streaming or non-streaming)."""
+    """
+    Create a chat completion.
+
+    ## 请求头参数
+
+    | Header | 说明 | 示例 |
+    |--------|------|------|
+    | `X-Session-ID` | 会话标识 | `conversation_123` |
+    | `X-User-ID` | 用户标识 | `user_abc` |
+    | `X-Request-ID` | 请求追踪 ID | `req_123` |
+    | `Authorization` | API Key | `Bearer sk-xxx` |
+
+    ## 支持的内容类型
+
+    - `text`: 纯文本消息
+    - `image_url`: 图片 URL 或 Base64
+    - `audio_url`: 音频 URL
+    - `video_url`: 视频 URL
+    - `input_audio`: OpenAI 格式音频
+    - `file`: 通用文件 URL
+
+    ## 流式响应
+
+    设置 `stream: true` 启用 SSE 流式输出。
+
+    ## 会话管理
+
+    通过以下方式区分会话：
+    - 请求头 `X-Session-ID`
+    - 请求头 `X-User-ID`
+    - 请求体 `user` 字段
+    """
     # 从请求头获取 Session ID 或 User ID（支持多会话）
-    session_id_override = http_request.headers.get("X-Session-ID")
-    user_id_override = http_request.headers.get("X-User-ID")
+    # 优先使用显式参数，否则从 http_request 获取
+    session_id_override = x_session_id or http_request.headers.get("X-Session-ID")
+    user_id_override = x_user_id or http_request.headers.get("X-User-ID")
 
     if session_id_override:
         request.user = session_id_override

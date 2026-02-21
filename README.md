@@ -7,7 +7,7 @@
 ### 核心功能
 
 - **OpenAI API 兼容**: 完全兼容 OpenAI Chat Completions API 规范
-- **流式响应**: 支持 SSE 流式输出，模拟打字机效果
+- **真正流式响应**: 使用 ADK SSE 端点实现实时流式输出
 - **多会话管理**: 支持通过 Header 或请求体区分不同会话
 - **请求追踪**: 每个请求分配唯一 ID，便于调试和日志关联
 - **可选认证**: Bearer Token API Key 认证
@@ -25,7 +25,9 @@
 
 ### 性能优化
 
-- **并发 URL 下载**: 消息中的多个 URL 并发下载，大幅提升处理速度
+- **连接池复用**: httpx 连接池，减少 TCP 握手开销
+- **并发 URL 下载**: 消息中的多个 URL 并发下载
+- **HTTP/2 支持**: 支持 HTTP/2 协议
 - **请求追踪**: 响应头包含 `X-Request-ID` 和 `X-Process-Time`
 
 ### 文本提取
@@ -47,14 +49,14 @@ Gemini 原生支持 HTML、CSS、JavaScript、JSON、XML、CSV、RTF、Markdown 
 ## 架构
 
 ```
-┌─────────────────┐    OpenAI API    ┌─────────────────┐    ADK API     ┌─────────────────┐
-│                 │     Format       │                 │     Format     │                 │
+┌─────────────────┐    OpenAI API    ┌─────────────────┐    ADK SSE     ┌─────────────────┐
+│                 │     Format       │                 │     Stream     │                 │
 │  ChatBox/Dify   │  ─────────────>  │   Middleware    │  ────────────> │   ADK Backend   │
 │                 │                  │                 │                │                 │
 │                 │  <─────────────  │   - 格式转换     │  <──────────── │   (Gemini)      │
-│                 │    JSON/SSE      │   - 文本提取     │    JSON/SSE    │                 │
-└─────────────────┘                  │   - 并发下载     │                └─────────────────┘
-                                     │   - 会话管理     │
+│                 │    JSON/SSE      │   - 消息去重     │    Real SSE    │                 │
+└─────────────────┘                  │   - 连接池复用   │                └─────────────────┘
+                                     │   - 并发下载     │
                                      └─────────────────┘
 ```
 
@@ -185,9 +187,19 @@ docker ps  # 查看 STATUS 列的 healthy 状态
 docker inspect --format='{{.State.Health.Status}}' adk-middleware
 ```
 
-## API 端点
+## API 文档
 
-### 核心端点
+### OpenAPI/Swagger
+
+访问交互式 API 文档：
+
+- **Swagger UI**: http://localhost:8080/docs
+- **ReDoc**: http://localhost:8080/redoc
+- **OpenAPI JSON**: http://localhost:8080/openapi.json
+
+### 端点列表
+
+#### 核心端点
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -195,14 +207,14 @@ docker inspect --format='{{.State.Health.Status}}' adk-middleware
 | `/v1/models` | GET | 获取可用模型列表 |
 | `/upload` | POST | 文件上传并转换为 Base64 |
 
-### 健康检查
+#### 健康检查
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/v1/health` | GET | 基础健康检查 |
 | `/v1/health/detailed` | GET | 详细健康检查（含 ADK 后端状态） |
 
-### Session 管理
+#### Session 管理
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -320,6 +332,74 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 > **注意**: 如果不指定任何会话标识，每次请求都会创建新会话。
 
+## 请求头说明
+
+### 认证头
+
+| Header | 必填 | 说明 | 示例 |
+|--------|------|------|------|
+| `Authorization` | 可选 | API Key 认证 | `Bearer sk-your-api-key` |
+
+### 会话头
+
+| Header | 必填 | 说明 | 示例 |
+|--------|------|------|------|
+| `X-Session-ID` | 可选 | 会话标识，用于区分不同对话 | `conversation_123` |
+| `X-User-ID` | 可选 | 用户标识，用于区分不同用户 | `user_abc` |
+
+### 追踪头
+
+| Header | 必填 | 说明 | 示例 |
+|--------|------|------|------|
+| `X-Request-ID` | 可选 | 请求追踪 ID，用于日志关联 | `req_abc123` |
+
+### 完整示例
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "X-Session-ID: my_session_123" \
+  -H "X-Request-ID: req_001" \
+  -d '{
+    "model": "agent",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'
+```
+
+### 响应头
+
+每个响应都会返回：
+
+```
+X-Request-ID: req_afd77e079d25
+X-Process-Time: 1.234s
+```
+
+## 流式响应
+
+### 真正的 SSE 流式
+
+使用 ADK `/run_sse` 端点实现真正的流式响应：
+
+```
+ADK 生成 → 实时转发 → 用户即时看到
+```
+
+**对比**：
+- 之前：等待完整响应 → 分块发送（模拟流式）
+- 现在：边生成边转发（真正的流式）
+
+### 消息去重
+
+自动处理 ADK SSE 事件中的重复内容：
+
+```
+事件1: "Hello"     → 发送 "Hello"
+事件2: "Hello Wor" → 发送 " Wor"
+事件3: "Hello World" → 发送 "ld"
+```
+
 ## 请求追踪
 
 每个请求都会分配唯一的 `X-Request-ID`，响应头中包含：
@@ -333,6 +413,28 @@ X-Process-Time: 1.234s
 
 ```bash
 curl -H "X-Request-ID: my-custom-id" http://localhost:8080/v1/chat/completions ...
+```
+
+## 性能优化
+
+### 连接池配置
+
+```python
+# httpx 连接池
+max_connections=100          # 最大连接数
+max_keepalive_connections=20 # Keep-alive 连接数
+keepalive_expiry=30.0        # Keep-alive 过期时间（秒）
+```
+
+### 并发 URL 下载
+
+消息中的多个 URL 会并发下载：
+
+```
+之前: URL1 → URL2 → URL3 (串行)
+现在: URL1 ┐
+       URL2 ├→ 并发
+       URL3 ┘
 ```
 
 ## 错误响应
@@ -374,6 +476,18 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     "model": "agent",
     "messages": [{"role": "user", "content": "你好"}],
     "stream": false
+  }'
+```
+
+### 流式对话
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "agent",
+    "messages": [{"role": "user", "content": "请详细介绍一下"}],
+    "stream": true
   }'
 ```
 
@@ -474,13 +588,15 @@ adk_to_openai_api/
 ├── app/
 │   ├── __init__.py
 │   ├── main.py           # FastAPI 应用和端点
-│   ├── adk_client.py     # ADK 后端客户端
-│   ├── multimodal.py     # 多模态内容处理器（含并发下载）
+│   ├── adk_client.py     # ADK 客户端（连接池、SSE 流式）
+│   ├── multimodal.py     # 多模态处理器（并发下载）
 │   ├── models.py         # Pydantic 数据模型
 │   ├── config.py         # 配置管理
 │   └── auth.py           # API Key 认证
 ├── main.py               # 应用入口
 ├── requirements.txt      # Python 依赖
+├── Dockerfile            # Docker 镜像
+├── docker-compose.yml    # Docker Compose
 └── README.md
 ```
 

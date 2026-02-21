@@ -2,6 +2,7 @@ import json
 import time
 from typing import AsyncGenerator, Optional
 import httpx
+from contextlib import asynccontextmanager
 from app.config import settings
 from app.models import (
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionResponseChoice,
@@ -21,6 +22,40 @@ class ADKClient:
         self._session_cache = set()  # Simple cache for created sessions
         self._content_cache = {}  # Cache to track sent content for deduplication
         self._event_cache = set()  # Cache to track processed events for deduplication
+
+        # Connection pool for better performance
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._http_limits = httpx.Limits(
+            max_connections=100,      # Total max connections
+            max_keepalive_connections=20,  # Keep-alive connections
+            keepalive_expiry=30.0     # Keep-alive expiry time
+        )
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client with connection pooling."""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0),
+                limits=self._http_limits,
+                http2=True  # Enable HTTP/2 for better performance
+            )
+        return self._http_client
+
+    async def close(self):
+        """Close the HTTP client and release resources."""
+        if self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
+            logger.info("HTTP client closed")
+
+    @asynccontextmanager
+    async def _get_client_context(self):
+        """Context manager for HTTP client (for backward compatibility)."""
+        client = await self._get_client()
+        try:
+            yield client
+        except Exception:
+            # Don't close on error, let the pool handle it
+            raise
         
     async def create_chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
         """Create a non-streaming chat completion."""
@@ -35,19 +70,19 @@ class ADKClient:
         logger.debug(f"Request data: {request_data}")
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{self.adk_host}/run",
-                    json=request_data
-                )
-                logger.info(f"ADK response status: {response.status_code}")
+            client = await self._get_client()
+            response = await client.post(
+                f"{self.adk_host}/run",
+                json=request_data
+            )
+            logger.info(f"ADK response status: {response.status_code}")
 
-                if response.status_code == 200:
-                    adk_response = response.json()
-                    return self._convert_from_adk_response(adk_response, request.model)
+            if response.status_code == 200:
+                adk_response = response.json()
+                return self._convert_from_adk_response(adk_response, request.model)
 
-                # Handle error response
-                response.raise_for_status()
+            # Handle error response
+            response.raise_for_status()
 
         except httpx.HTTPStatusError as e:
             logger.error(f"ADK HTTP error: {e.response.status_code} - {e.response.text}")
@@ -74,64 +109,64 @@ class ADKClient:
         sent_content_tracker[tracker_key] = ""
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self.adk_host}/run_sse",
-                    json=request_data,
-                    headers={"Accept": "text/event-stream"}
-                ) as response:
-                    logger.info(f"ADK SSE response status: {response.status_code}")
+            client = await self._get_client()
+            async with client.stream(
+                "POST",
+                f"{self.adk_host}/run_sse",
+                json=request_data,
+                headers={"Accept": "text/event-stream"}
+            ) as response:
+                logger.info(f"ADK SSE response status: {response.status_code}")
 
-                    if response.status_code != 200:
-                        error_body = await response.aread()
-                        logger.error(f"ADK SSE error: {response.status_code} - {error_body}")
-                        yield self._create_error_chunk(request.model, f"ADK error: {response.status_code}")
-                        yield "data: [DONE]\n\n"
-                        return
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    logger.error(f"ADK SSE error: {response.status_code} - {error_body}")
+                    yield self._create_error_chunk(request.model, f"ADK error: {response.status_code}")
+                    yield "data: [DONE]\n\n"
+                    return
 
-                    chat_id = f"chatcmpl-{int(time.time())}"
+                chat_id = f"chatcmpl-{int(time.time())}"
 
-                    async for line in response.aiter_lines():
-                        if not line.strip():
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+
+                    # Parse SSE line
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+
+                        if data_str == "[DONE]":
+                            # Send final chunk
+                            yield self._create_final_chunk(chat_id, request.model)
+                            yield "data: [DONE]\n\n"
+                            return
+
+                        try:
+                            event_data = json.loads(data_str)
+                            chunk = self._convert_adk_sse_to_openai(
+                                event_data,
+                                request.model,
+                                chat_id,
+                                sent_content_tracker[tracker_key]
+                            )
+
+                            if chunk:
+                                # Update tracker with new content
+                                if "choices" in chunk and chunk["choices"]:
+                                    delta = chunk["choices"][0].get("delta", {})
+                                    new_content = delta.get("content", "")
+                                    if new_content:
+                                        sent_content_tracker[tracker_key] += new_content
+
+                                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to parse SSE data: {data_str[:100]}")
                             continue
 
-                        # Parse SSE line
-                        if line.startswith("data:"):
-                            data_str = line[5:].strip()
-
-                            if data_str == "[DONE]":
-                                # Send final chunk
-                                yield self._create_final_chunk(chat_id, request.model)
-                                yield "data: [DONE]\n\n"
-                                return
-
-                            try:
-                                event_data = json.loads(data_str)
-                                chunk = self._convert_adk_sse_to_openai(
-                                    event_data,
-                                    request.model,
-                                    chat_id,
-                                    sent_content_tracker[tracker_key]
-                                )
-
-                                if chunk:
-                                    # Update tracker with new content
-                                    if "choices" in chunk and chunk["choices"]:
-                                        delta = chunk["choices"][0].get("delta", {})
-                                        new_content = delta.get("content", "")
-                                        if new_content:
-                                            sent_content_tracker[tracker_key] += new_content
-
-                                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"Failed to parse SSE data: {data_str[:100]}")
-                                continue
-
-                    # If we get here without [DONE], send final chunk anyway
-                    yield self._create_final_chunk(chat_id, request.model)
-                    yield "data: [DONE]\n\n"
+                # If we get here without [DONE], send final chunk anyway
+                yield self._create_final_chunk(chat_id, request.model)
+                yield "data: [DONE]\n\n"
 
         except httpx.TimeoutException:
             logger.error("ADK SSE timeout")
@@ -529,25 +564,25 @@ class ADKClient:
             return
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                # Create session using ADK API
-                logger.info(f"Creating ADK session: {session_id} for app={app_name}, user={user_id}")
-                response = await client.post(
-                    f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions",
-                    json={"sessionId": session_id}
-                )
+            client = await self._get_client()
+            # Create session using ADK API
+            logger.info(f"Creating ADK session: {session_id} for app={app_name}, user={user_id}")
+            response = await client.post(
+                f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions",
+                json={"sessionId": session_id}
+            )
 
-                logger.info(f"Session creation response: {response.status_code}")
+            logger.info(f"Session creation response: {response.status_code}")
 
-                if response.status_code in [200, 201]:
-                    logger.info(f"Created ADK session: {session_id}")
-                    self._session_cache.add(session_key)
-                elif response.status_code == 409:
-                    # Session already exists
-                    logger.info(f"ADK session already exists: {session_id}")
-                    self._session_cache.add(session_key)
-                else:
-                    logger.warning(f"Failed to create ADK session: {response.status_code} - {response.text}")
+            if response.status_code in [200, 201]:
+                logger.info(f"Created ADK session: {session_id}")
+                self._session_cache.add(session_key)
+            elif response.status_code == 409:
+                # Session already exists
+                logger.info(f"ADK session already exists: {session_id}")
+                self._session_cache.add(session_key)
+            else:
+                logger.warning(f"Failed to create ADK session: {response.status_code} - {response.text}")
 
         except Exception as e:
             logger.error(f"Error ensuring ADK session: {e}")
@@ -558,19 +593,19 @@ class ADKClient:
         session_key = f"{app_name}:{user_id}:{session_id}"
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                logger.info(f"Deleting ADK session: {session_id}")
-                response = await client.delete(
-                    f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
-                )
+            client = await self._get_client()
+            logger.info(f"Deleting ADK session: {session_id}")
+            response = await client.delete(
+                f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+            )
 
-                if response.status_code in [200, 204, 404]:
-                    logger.info(f"Deleted ADK session: {session_id}")
-                    self._session_cache.discard(session_key)
-                    return True
-                else:
-                    logger.warning(f"Failed to delete session: {response.status_code}")
-                    return False
+            if response.status_code in [200, 204, 404]:
+                logger.info(f"Deleted ADK session: {session_id}")
+                self._session_cache.discard(session_key)
+                return True
+            else:
+                logger.warning(f"Failed to delete session: {response.status_code}")
+                return False
 
         except Exception as e:
             logger.error(f"Error deleting ADK session: {e}")
@@ -595,6 +630,7 @@ class ADKClient:
     async def check_health(self) -> dict:
         """
         Check health status of ADK backend connection.
+        Uses separate client with short timeout for health checks.
         Returns dict with status and details.
         """
         result = {
@@ -605,6 +641,7 @@ class ADKClient:
         }
 
         try:
+            # Use separate client with short timeout for health checks
             async with httpx.AsyncClient(timeout=5.0) as client:
                 start_time = time.time()
                 response = await client.get(f"{self.adk_host}/")
