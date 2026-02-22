@@ -2,6 +2,8 @@ import logging
 import base64
 import uuid
 import time
+import hashlib
+import json
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 import httpx
@@ -10,7 +12,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Dict, Any, Optional, Annotated
+from typing import Dict, Any, Optional, Annotated, List
 
 from app.config import settings
 from app.models import (
@@ -18,20 +20,31 @@ from app.models import (
     HealthResponse, ErrorResponse
 )
 from app.adk_client import ADKClient
-from app.auth import verify_api_key_dependency
+from app.auth import verify_api_key_dependency, auth
 
 # Configure logging with request ID support
 class RequestIdFilter(logging.Filter):
     """Add request_id to log records"""
     def filter(self, record):
+        # Set request_id, default to '-' if not available
         record.request_id = get_request_id() or '-'
         return True
 
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper()),
-    format='%(asctime)s [%(request_id)s] %(name)s - %(levelname)s - %(message)s'
-)
-logging.getLogger().addFilter(RequestIdFilter())
+# Use standard formatting to avoid issues with other libraries
+_formatter = logging.Formatter('%(asctime)s [%(request_id)s] %(name)s - %(levelname)s - %(message)s')
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_formatter)
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(getattr(logging, settings.log_level.upper()))
+_root_logger.addHandler(_handler)
+_root_logger.addFilter(RequestIdFilter())
+
+# Disable propagation to avoid duplicate logs
+logging.getLogger('httpx').propagate = True
+logging.getLogger('httpcore').propagate = True
+
 logger = logging.getLogger(__name__)
 
 # Context variable for request ID
@@ -42,6 +55,45 @@ def get_request_id() -> Optional[str]:
 
 def set_request_id(request_id: str):
     request_id_var.set(request_id)
+
+
+def _generate_session_id_from_messages(messages: List, tenant_id: str) -> str:
+    """
+    Generate a session ID based on conversation history hash.
+    Same conversation context = same session ID.
+
+    The hash is based on all messages except the last one (current user input).
+    This way, if the conversation history is the same, we reuse the session.
+    """
+    if not messages or len(messages) <= 1:
+        # New conversation, generate new session
+        return f"{tenant_id}_new_{uuid.uuid4().hex[:8]}"
+
+    # Build hash from conversation history (exclude last message)
+    history_parts = []
+    for msg in messages[:-1]:  # Exclude the current user message
+        role = getattr(msg, 'role', '')
+        content = getattr(msg, 'content', '')
+
+        # Handle different content types
+        if isinstance(content, str):
+            history_parts.append(f"{role}:{content}")
+        elif isinstance(content, list):
+            # For multimodal content, extract text parts
+            text_parts = []
+            for part in content:
+                if hasattr(part, 'text') and part.text:
+                    text_parts.append(part.text)
+            history_parts.append(f"{role}:{' '.join(text_parts)}")
+
+    if not history_parts:
+        return f"{tenant_id}_new_{uuid.uuid4().hex[:8]}"
+
+    # Create hash from history
+    history_str = "|".join(history_parts)
+    history_hash = hashlib.md5(history_str.encode()).hexdigest()[:12]
+
+    return f"{tenant_id}_{history_hash}"
 
 
 # Request tracking middleware
@@ -448,22 +500,30 @@ async def create_chat_completion(
     - 请求头 `X-User-ID`
     - 请求体 `user` 字段
     """
-    # 从请求头获取 Session ID 或 User ID（支持多会话）
-    # 优先使用显式参数，否则从 http_request 获取
+    # 获取租户 ID（从 API Key）
+    tenant_id = auth.get_session_id_from_api_key(api_key_valid)
+
+    # 生成 Session ID（基于对话历史 hash）
+    # 这样相同的对话上下文会使用相同的 session
+    session_id = _generate_session_id_from_messages(request.messages, tenant_id)
+
+    # 允许通过 header 或 user 字段覆盖 session
     session_id_override = x_session_id or http_request.headers.get("X-Session-ID")
     user_id_override = x_user_id or http_request.headers.get("X-User-ID")
 
     if session_id_override:
-        request.user = session_id_override
+        session_id = session_id_override
         logger.info(f"Session from header: {session_id_override}")
     elif user_id_override:
-        request.user = user_id_override
+        session_id = user_id_override
         logger.info(f"User from header: {user_id_override}")
-    elif not request.user:
-        request.user = f"temp_{uuid.uuid4().hex[:8]}"
-        logger.info(f"Generated temp session: {request.user}")
+    elif request.user:
+        # 使用请求中的 user 字段
+        session_id = request.user
+        logger.info(f"Session from user field: {request.user}")
 
-    logger.info(f"Chat request: model={request.model}, user={request.user}, stream={request.stream}, messages={len(request.messages)}")
+    request.user = session_id
+    logger.info(f"Chat request: tenant={tenant_id}, session={session_id}, model={request.model}, stream={request.stream}, messages={len(request.messages)}")
 
     # Validate request
     if not request.messages:
@@ -492,6 +552,7 @@ async def create_chat_completion(
 
         # Save to history
         if settings.session_history_enabled and db:
+            logger.info(f"Saving to history: session_id={request.user}")
             _save_message_to_history(
                 session_id=request.user,
                 user_id=request.user,
@@ -499,6 +560,8 @@ async def create_chat_completion(
                 response=response,
                 latency_ms=latency_ms
             )
+        else:
+            logger.warning(f"History not saved: enabled={settings.session_history_enabled}, db={db is not None if db else 'None'}")
 
         logger.info(f"Chat response generated for user: {request.user}")
         return response
