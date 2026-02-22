@@ -222,6 +222,92 @@ docker inspect --format='{{.State.Health.Status}}' adk-middleware
 | `/v1/sessions/{session_id}` | DELETE | 删除指定 session |
 | `/v1/sessions/{session_id}/reset` | POST | 重置 session（删除并重建） |
 
+#### 监控分析
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/metrics` | GET | Prometheus 兼容的 metrics |
+| `/v1/metrics/summary` | GET | JSON 格式的指标摘要 |
+| `/v1/metrics/requests` | GET | 最近请求列表 |
+| `/v1/metrics/cost` | GET | 成本估算 |
+| `/v1/metrics/tenant/{id}` | GET | 租户指标 |
+
+## 监控分析
+
+### Prometheus Metrics
+
+```bash
+curl http://localhost:8080/v1/metrics
+```
+
+支持的指标：
+- `adk_requests_total` - 总请求数
+- `adk_requests_successful` - 成功请求数
+- `adk_requests_failed` - 失败请求数
+- `adk_tokens_input` - 输入 token 数
+- `adk_tokens_output` - 输出 token 数
+- `adk_latency_ms_average` - 平均延迟
+- `adk_requests_by_model` - 按模型统计
+- `adk_requests_by_tenant` - 按租户统计
+- `adk_errors_by_type` - 按错误类型统计
+
+### 指标摘要
+
+```bash
+curl http://localhost:8080/v1/metrics/summary
+```
+
+```json
+{
+  "total_requests": 100,
+  "successful_requests": 95,
+  "failed_requests": 5,
+  "success_rate_percent": 95.0,
+  "total_input_tokens": 5000,
+  "total_output_tokens": 10000,
+  "total_tokens": 15000,
+  "average_latency_ms": 1234.56,
+  "by_tenant": {"tenant_1": 50, "tenant_2": 50},
+  "by_model": {"agent": 100},
+  "errors_by_type": {},
+  "content_types": {"text": 80, "image": 20}
+}
+```
+
+### 最近请求
+
+```bash
+# 获取最近 50 条请求
+curl "http://localhost:8080/v1/metrics/requests?limit=50"
+
+# 按租户过滤
+curl "http://localhost:8080/v1/metrics/requests?tenant_id=tenant_1"
+```
+
+### 成本估算
+
+```bash
+curl "http://localhost:8080/v1/metrics/cost?model=gemini-1.5-flash&input_tokens=1000&output_tokens=2000"
+```
+
+```json
+{
+  "model": "gemini-1.5-flash",
+  "input_tokens": 1000,
+  "output_tokens": 2000,
+  "input_cost_usd": 0.000075,
+  "output_cost_usd": 0.0006,
+  "total_cost_usd": 0.000675
+}
+```
+
+### Grafana 集成
+
+在 Grafana 中添加 Prometheus 数据源，指向：
+```
+http://localhost:8080/v1/metrics
+```
+
 #### 会话记录
 
 | 端点 | 方法 | 说明 |
