@@ -266,7 +266,7 @@ app = FastAPI(
 - 请求头 `X-User-ID`
 - 请求体 `user` 字段
 """,
-    version="1.2.0",
+    version="1.3.0",
     lifespan=lifespan,
     contact={
         "name": "ADK Middleware",
@@ -1136,7 +1136,7 @@ async def root():
     """Root endpoint."""
     return {
         "message": "ADK Middleware API is running",
-        "version": "1.1.0",
+        "version": "1.3.0",
         "request_id": get_request_id()
     }
 

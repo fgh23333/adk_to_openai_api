@@ -8,7 +8,9 @@
 
 - **OpenAI API 兼容**: 完全兼容 OpenAI Chat Completions API 规范
 - **真正流式响应**: 使用 ADK SSE 端点实现实时流式输出
-- **多会话管理**: 支持通过 Header 或请求体区分不同会话
+- **Session 自动管理**: 基于 API Key 和对话历史自动维护会话
+- **会话记录**: SQLite 存储对话历史，支持查询和导出
+- **监控分析**: Prometheus 兼容指标，请求统计和分析
 - **请求追踪**: 每个请求分配唯一 ID，便于调试和日志关联
 - **可选认证**: Bearer Token API Key 认证
 
