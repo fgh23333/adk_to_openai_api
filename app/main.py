@@ -21,6 +21,7 @@ from app.models import (
 )
 from app.adk_client import ADKClient
 from app.auth import verify_api_key_dependency, auth
+from app.metrics import get_metrics_collector, CostEstimator, RequestMetrics
 
 # Configure logging with request ID support
 class RequestIdFilter(logging.Filter):
@@ -124,6 +125,9 @@ adk_client = ADKClient()
 from app.database import init_database, get_database
 db = None
 
+# Initialize metrics collector
+metrics_collector = get_metrics_collector()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -136,11 +140,19 @@ async def lifespan(app: FastAPI):
         db = init_database(settings.database_path)
         logger.info(f"Session history database initialized: {settings.database_path}")
 
+    # Initialize metrics
+    logger.info("Metrics collector initialized")
+
     yield
 
-    # Shutdown - close HTTP client
+    # Shutdown - close HTTP client and cleanup
     logger.info("ADK Middleware shutting down...")
+
+    # Cleanup old metrics
+    await metrics_collector.cleanup_old_requests()
+
     await adk_client.close()
+    logger.info("Shutdown complete")
 
 
 # OpenAPI examples
@@ -533,41 +545,83 @@ async def create_chat_completion(
     if request.messages[-1].role != "user":
         raise HTTPException(status_code=400, detail="Last message must be from user")
 
+    # Start metrics collection
+    request_id = get_request_id() or f"req_{uuid.uuid4().hex[:8]}"
+    req_metrics = await metrics_collector.start_request(
+        request_id=request_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        model=request.model,
+        is_streaming=request.stream
+    )
+
     if request.stream:
         # For streaming, wrap the generator to save history after completion
         return StreamingResponse(
-            _stream_with_history(request),
+            _stream_with_history(request, req_metrics),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "Access-Control-Allow-Origin": "*",
-                "X-Request-ID": get_request_id() or "",
+                "X-Request-ID": request_id,
             }
         )
     else:
         start_time = time.time()
-        response = await adk_client.create_chat_completion(request)
-        latency_ms = int((time.time() - start_time) * 1000)
+        try:
+            response = await adk_client.create_chat_completion(request)
+            latency_ms = int((time.time() - start_time) * 1000)
 
-        # Save to history
-        if settings.session_history_enabled and db:
-            logger.info(f"Saving to history: session_id={request.user}")
-            _save_message_to_history(
-                session_id=request.user,
-                user_id=request.user,
-                request=request,
-                response=response,
-                latency_ms=latency_ms
+            # Estimate tokens (approximate)
+            input_text = ""
+            for msg in request.messages:
+                if isinstance(msg.content, str):
+                    input_text += msg.content
+                elif isinstance(msg.content, list):
+                    for part in msg.content:
+                        if hasattr(part, 'text') and part.text:
+                            input_text += part.text
+
+            output_text = response.choices[0].message.content if response.choices else ""
+            input_tokens = len(input_text) // 4  # Rough estimate
+            output_tokens = len(output_text) // 4
+
+            # End metrics
+            await metrics_collector.end_request(
+                metrics=req_metrics,
+                success=True,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens
             )
-        else:
-            logger.warning(f"History not saved: enabled={settings.session_history_enabled}, db={db is not None if db else 'None'}")
 
-        logger.info(f"Chat response generated for user: {request.user}")
-        return response
+            # Save to history
+            if settings.session_history_enabled and db:
+                logger.info(f"Saving to history: session_id={request.user}")
+                _save_message_to_history(
+                    session_id=request.user,
+                    user_id=request.user,
+                    request=request,
+                    response=response,
+                    latency_ms=latency_ms
+                )
+            else:
+                logger.warning(f"History not saved: enabled={settings.session_history_enabled}, db={db is not None if db else 'None'}")
+
+            logger.info(f"Chat response generated for user: {request.user}")
+            return response
+
+        except Exception as e:
+            # Record failed request
+            await metrics_collector.end_request(
+                metrics=req_metrics,
+                success=False,
+                error_type=type(e).__name__
+            )
+            raise
 
 
-async def _stream_with_history(request: ChatCompletionRequest):
+async def _stream_with_history(request: ChatCompletionRequest, req_metrics: 'RequestMetrics'):
     """Wrapper generator that saves history after streaming completes."""
     start_time = time.time()
     full_content = ""
@@ -625,6 +679,28 @@ async def _stream_with_history(request: ChatCompletionRequest):
             )
         except Exception as e:
             logger.error(f"Failed to save streaming history: {e}")
+
+    # End metrics for streaming request
+    # Estimate tokens
+    user_content = ""
+    if request.messages and request.messages[-1]:
+        last_msg = request.messages[-1]
+        if isinstance(last_msg.content, str):
+            user_content = last_msg.content
+        elif isinstance(last_msg.content, list):
+            for part in last_msg.content:
+                if hasattr(part, 'text') and part.text:
+                    user_content += part.text
+
+    input_tokens = len(user_content) // 4
+    output_tokens = len(full_content) // 4
+
+    await metrics_collector.end_request(
+        metrics=req_metrics,
+        success=True,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens
+    )
 
 
 def _save_message_to_history(
@@ -704,6 +780,78 @@ async def health_check_detailed() -> dict:
     logger.info("Detailed health check request")
     health_status = await adk_client.check_health()
     return health_status
+
+
+# ============ Metrics & Monitoring API ============
+
+@app.get("/v1/metrics")
+async def get_metrics() -> str:
+    """
+    Get Prometheus-compatible metrics.
+    No authentication required for monitoring systems.
+    """
+    return metrics_collector.get_prometheus_metrics()
+
+
+@app.get("/v1/metrics/summary")
+async def get_metrics_summary(
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """Get metrics summary in JSON format."""
+    return metrics_collector.get_summary()
+
+
+@app.get("/v1/metrics/requests")
+async def get_recent_requests(
+    limit: int = 100,
+    tenant_id: str = None,
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    Get recent request metrics.
+
+    Parameters:
+    - limit: Maximum number of requests to return
+    - tenant_id: Filter by tenant (optional)
+    """
+    requests = metrics_collector.get_recent_requests(limit=limit, tenant_id=tenant_id)
+    return {
+        "count": len(requests),
+        "requests": requests
+    }
+
+
+@app.get("/v1/metrics/cost")
+async def estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    Estimate cost for a request.
+
+    Parameters:
+    - model: Model name
+    - input_tokens: Number of input tokens
+    - output_tokens: Number of output tokens
+    """
+    cost = CostEstimator.estimate_cost(model, input_tokens, output_tokens)
+    return {
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        **cost
+    }
+
+
+@app.get("/v1/metrics/tenant/{tenant_id}")
+async def get_tenant_metrics(
+    tenant_id: str,
+    api_key_valid: bool = Depends(verify_api_key_dependency)
+) -> dict:
+    """Get metrics for a specific tenant."""
+    return metrics_collector.get_tenant_stats(tenant_id)
 
 
 @app.get("/v1/sessions")
