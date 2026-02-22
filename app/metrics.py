@@ -261,34 +261,6 @@ class MetricsCollector:
         return "\n".join(lines)
 
 
-class CostEstimator:
-    """Estimate costs based on token usage."""
-
-    # Cost per 1K tokens (approximate, in USD)
-    PRICING = {
-        "gemini-1.5-flash": {"input": 0.000075, "output": 0.0003},
-        "gemini-1.5-pro": {"input": 0.00125, "output": 0.005},
-        "gemini-1.0-pro": {"input": 0.0005, "output": 0.0015},
-        "gemini-2.0-flash": {"input": 0.0001, "output": 0.0004},
-        "default": {"input": 0.0001, "output": 0.0004},  # Default pricing
-    }
-
-    @classmethod
-    def estimate_cost(cls, model: str, input_tokens: int, output_tokens: int) -> Dict[str, float]:
-        """Estimate cost for a request."""
-        pricing = cls.PRICING.get(model, cls.PRICING["default"])
-
-        input_cost = (input_tokens / 1000) * pricing["input"]
-        output_cost = (output_tokens / 1000) * pricing["output"]
-        total_cost = input_cost + output_cost
-
-        return {
-            "input_cost_usd": round(input_cost, 6),
-            "output_cost_usd": round(output_cost, 6),
-            "total_cost_usd": round(total_cost, 6),
-        }
-
-
 # Global metrics collector
 _metrics_collector: Optional[MetricsCollector] = None
 

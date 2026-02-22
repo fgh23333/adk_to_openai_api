@@ -229,7 +229,6 @@ docker inspect --format='{{.State.Health.Status}}' adk-middleware
 | `/v1/metrics` | GET | Prometheus 兼容的 metrics |
 | `/v1/metrics/summary` | GET | JSON 格式的指标摘要 |
 | `/v1/metrics/requests` | GET | 最近请求列表 |
-| `/v1/metrics/cost` | GET | 成本估算 |
 | `/v1/metrics/tenant/{id}` | GET | 租户指标 |
 
 ## 监控分析
@@ -282,23 +281,6 @@ curl "http://localhost:8080/v1/metrics/requests?limit=50"
 
 # 按租户过滤
 curl "http://localhost:8080/v1/metrics/requests?tenant_id=tenant_1"
-```
-
-### 成本估算
-
-```bash
-curl "http://localhost:8080/v1/metrics/cost?model=gemini-1.5-flash&input_tokens=1000&output_tokens=2000"
-```
-
-```json
-{
-  "model": "gemini-1.5-flash",
-  "input_tokens": 1000,
-  "output_tokens": 2000,
-  "input_cost_usd": 0.000075,
-  "output_cost_usd": 0.0006,
-  "total_cost_usd": 0.000675
-}
 ```
 
 ### Grafana 集成
