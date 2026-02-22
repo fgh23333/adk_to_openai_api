@@ -340,6 +340,65 @@ curl -X POST "http://localhost:8080/v1/history/cleanup?days=30"
 - 不会上传到任何服务器
 - 可随时删除历史记录
 
+## Session 自动管理
+
+### 设计理念
+
+OpenAI API 是无状态的，本中间件通过以下方式实现有状态会话：
+
+| 层级 | 标识 | 说明 |
+|------|------|------|
+| **租户** | API Key | 区分不同用户/租户 |
+| **会话** | 对话历史 Hash | 区分同一租户下的不同会话 |
+
+### Session ID 生成规则
+
+```
+Session ID = {租户ID}_{对话历史Hash}
+```
+
+**工作原理**：
+
+1. **首次对话**（无历史）→ 生成新 session
+2. **继续对话**（有历史）→ 基于历史 hash 复用 session
+3. **新话题**（清空历史）→ 生成新 session
+
+### 示例
+
+```bash
+# 第一次请求（新对话）
+# messages: [{"role": "user", "content": "你好"}]
+# → session: session_abc123_new_xxxxx
+
+# 第二次请求（继续对话）
+# messages: [历史...] + [{"role": "user", "content": "你是谁"}]
+# → session: session_abc123_<hash>
+# → 相同历史 = 相同 session = 保持上下文
+```
+
+### 手动指定 Session
+
+如果需要手动控制 session，可以通过以下方式（优先级从高到低）：
+
+```bash
+# 方式 1: X-Session-ID header
+curl -H "X-Session-ID: my_session" ...
+
+# 方式 2: X-User-ID header
+curl -H "X-User-ID: my_user" ...
+
+# 方式 3: user 字段
+curl -d '{"user": "my_session", "messages": [...]}' ...
+```
+
+### ChatBox 等客户端配置
+
+ChatBox 等客户端会自动在请求中包含历史消息，因此：
+
+- **自动保持上下文**：相同历史 → 相同 session
+- **无需额外配置**：直接使用即可
+- **不同 API Key**：不同租户，session 隔离
+
 ## 健康检查
 
 ### 基础检查
