@@ -21,7 +21,7 @@ from app.models import (
 )
 from app.adk_client import ADKClient
 from app.auth import verify_api_key_dependency, auth
-from app.metrics import get_metrics_collector, CostEstimator, RequestMetrics
+from app.metrics import get_metrics_collector, RequestMetrics
 
 # Configure logging with request ID support
 class RequestIdFilter(logging.Filter):
@@ -818,30 +818,6 @@ async def get_recent_requests(
     return {
         "count": len(requests),
         "requests": requests
-    }
-
-
-@app.get("/v1/metrics/cost")
-async def estimate_cost(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    api_key_valid: bool = Depends(verify_api_key_dependency)
-) -> dict:
-    """
-    Estimate cost for a request.
-
-    Parameters:
-    - model: Model name
-    - input_tokens: Number of input tokens
-    - output_tokens: Number of output tokens
-    """
-    cost = CostEstimator.estimate_cost(model, input_tokens, output_tokens)
-    return {
-        "model": model,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        **cost
     }
 
 
