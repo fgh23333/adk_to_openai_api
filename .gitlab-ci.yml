@@ -1,0 +1,193 @@
+# GitLab CI 配置 - ADK Middleware 内网部署
+# 需要配置的 GitLab Variables:
+# - ADK_BACKEND_URL: 内网 ADK 后端地址
+# - API_KEY (optional): API 密钥（可选）
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+  # 内网 Docker Registry
+  REGISTRY_URL: registry.internal.local
+
+# 定义构建阶段
+stages:
+  - lint
+  - build
+  - test
+  - deploy
+
+# 默认配置
+default:
+  tags:
+    - docker
+  image: docker:24-cli
+
+# ==================== 镜像模板 ====================
+.docker-base:
+  services:
+    - docker:24-dind
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+
+# ==================== Lint 阶段 ====================
+lint:python:
+  stage: lint
+  image: python:3.12-slim
+  before_script:
+    - pip install ruff mypy
+  script:
+    - ruff check app/ --output-format=gitlab
+    - mypy app/ --ignore-missing-imports
+  allow_failure: true
+  artifacts:
+    reports:
+      codequality: gl-codequality.json
+    when: always
+
+lint:dockerfile:
+  stage: lint
+  image: hadolint/hadolint:latest-alpine
+  script:
+    - hadolint Dockerfile
+  allow_failure: true
+
+# ==================== Build 阶段 ====================
+build:docker:
+  stage: build
+  extends: .docker-base
+  script:
+    # 构建镜像
+    - docker build -t $IMAGE_NAME -t $IMAGE_LATEST .
+    # 推送到内网 registry
+    - docker push $IMAGE_NAME
+    - docker push $IMAGE_LATEST
+    # 显示镜像信息
+    - docker images | grep adk
+  only:
+    - main
+    - internal-deploy
+
+# ==================== Test 阶段 ====================
+test:unit:
+  stage: test
+  image: python:3.12-slim
+  before_script:
+    - pip install -e ".[test]"
+  script:
+    - python -m pytest tests/ -v --junitxml=report.xml --cov=app --cov-report=xml --cov-report=term
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+  artifacts:
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    when: always
+  allow_failure: true
+
+test:integration:
+  stage: test
+  image: docker:24-cli
+  services:
+    - docker:24-dind
+  variables:
+    ADK_BACKEND_URL: http://mock-adk:8080
+  script:
+    # 启动测试环境
+    - docker-compose -f docker-compose.test.yml up -d
+    - docker-compose -f docker-compose.test.yml run test-runner pytest tests/integration/
+    - docker-compose -f docker-compose.test.yml down -v
+  only:
+    - main
+    - internal-deploy
+  allow_failure: true
+
+# ==================== Deploy 阶段 ====================
+deploy:staging:
+  stage: deploy
+  extends: .docker-base
+  script:
+    # 拉取最新镜像
+    - docker pull $IMAGE_LATEST
+    # 更新 staging 服务
+    - |
+      docker service update \
+        --image $IMAGE_LATEST \
+        --env-add ADK_BACKEND_URL=$STAGING_ADK_BACKEND_URL \
+        adk-staging_adk-middleware || \
+      docker service create \
+        --name adk-staging_adk-middleware \
+        --replicas 1 \
+        --publish 8000:8000 \
+        --env ADK_BACKEND_URL=$STAGING_ADK_BACKEND_URL \
+        --network adk-network \
+        $IMAGE_LATEST
+    # 等待服务就绪
+    - sleep 10
+    # 健康检查
+    - curl -f http://staging.internal.local:8000/v1/health || exit 1
+  environment:
+    name: staging
+    url: http://staging.internal.local
+  only:
+    - internal-deploy
+  when: manual
+
+deploy:production:
+  stage: deploy
+  extends: .docker-base
+  script:
+    # 拉取镜像
+    - docker pull $IMAGE_NAME
+    # 备份当前版本
+    - docker tag $IMAGE_NAME $CI_REGISTRY_IMAGE:backup-$CI_COMMIT_SHORT_SHA
+    # 滚动更新
+    - |
+      docker service update \
+        --image $IMAGE_NAME \
+        --env ADK_BACKEND_URL=$PROD_ADK_BACKEND_URL \
+        --rollback-on-update-failure \
+        --update-delay 10s \
+        --update-parallelism 1 \
+        --update-monitor 30000ms \
+        adk-prod_adk-middleware
+    # 健康检查
+    - sleep 30
+    - curl -f http://prod.internal.local:8000/v1/health || exit 1
+  environment:
+    name: production
+    url: http://prod.internal.local
+  only:
+    - main
+  when: manual
+
+# ==================== 清理任务 ====================
+cleanup:old-images:
+  stage: deploy
+  extends: .docker-base
+  script:
+    # 删除 30 天前的镜像
+    - |
+      docker images --format "{{.ID}} {{.CreatedAt}}" | \
+      awk '$2 < "'$(date -d '30 days ago' '+%Y-%m-%d')'" {print $1}' | \
+      xargs -r docker rmi -f || true
+  only:
+    - schedules
+  allow_failure: true
+
+# ==================== 通知 ====================
+.notify_failure:
+  after_script:
+    - |
+      curl -X POST "$WEBHOOK_URL" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":\"❌ Pipeline $CI_PIPELINE_ID failed: $CI_JOB_NAME\nProject: $CI_PROJECT_PATH\nBranch: $CI_COMMIT_REF_NAME\nURL: $CI_PIPELINE_URL\"}"
+
+.notify_success:
+  after_script:
+    - |
+      curl -X POST "$WEBHOOK_URL" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":\"✅ Pipeline $CI_PIPELINE_ID succeeded: $CI_JOB_NAME\nProject: $CI_PROJECT_PATH\nBranch: $CI_COMMIT_REF_NAME\"}"

@@ -24,15 +24,16 @@ from app.auth import verify_api_key_dependency, auth
 from app.metrics import get_metrics_collector, RequestMetrics
 
 # Configure logging with request ID support
-class RequestIdFilter(logging.Filter):
-    """Add request_id to log records"""
-    def filter(self, record):
-        # Set request_id, default to '-' if not available
-        record.request_id = get_request_id() or '-'
-        return True
+class RequestIdFormatter(logging.Formatter):
+    """Custom formatter that handles missing request_id gracefully"""
+    def format(self, record):
+        # Add request_id to record if not present
+        if not hasattr(record, 'request_id'):
+            record.request_id = get_request_id() or '-'
+        return super().format(record)
 
 # Use standard formatting to avoid issues with other libraries
-_formatter = logging.Formatter('%(asctime)s [%(request_id)s] %(name)s - %(levelname)s - %(message)s')
+_formatter = RequestIdFormatter('%(asctime)s [%(request_id)s] %(name)s - %(levelname)s - %(message)s')
 
 _handler = logging.StreamHandler()
 _handler.setFormatter(_formatter)
@@ -40,7 +41,6 @@ _handler.setFormatter(_formatter)
 _root_logger = logging.getLogger()
 _root_logger.setLevel(getattr(logging, settings.log_level.upper()))
 _root_logger.addHandler(_handler)
-_root_logger.addFilter(RequestIdFilter())
 
 # Disable propagation to avoid duplicate logs
 logging.getLogger('httpx').propagate = True

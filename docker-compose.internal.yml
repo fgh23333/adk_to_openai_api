@@ -1,0 +1,182 @@
+# Docker Compose - ADK Middleware 内网部署
+# 使用方式：docker-compose -f docker-compose.internal.yml up -d
+# 配置文件：cp config/internal.example.env .env
+
+version: '3.8'
+
+services:
+  # Traefik 反向代理
+  traefik:
+    image: traefik:2.10
+    container_name: adk-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"      # Web
+      - "443:443"    # WebSecure (可选 HTTPS)
+      - "8080:8080"  # Dashboard & Metrics
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - traefik-logs:/var/log/traefik
+    environment:
+      - TZ=Asia/Shanghai
+    networks:
+      - adk-network
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ADK Middleware API 服务
+  adk-middleware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${INTERNAL_REGISTRY:-registry.internal.local}/adk-middleware:${IMAGE_TAG:-latest}
+    container_name: adk-middleware
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      # 服务配置
+      - PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # 内网 ADK 后端地址
+      - ADK_BACKEND_URL=${ADK_BACKEND_URL:-http://adk-backend.internal.local:8080}
+      - ADK_APP_NAME=${ADK_APP_NAME:-default_agent}
+      - ADK_TIMEOUT=${ADK_TIMEOUT:-120000}
+      - ADK_CONNECT_TIMEOUT=${ADK_CONNECT_TIMEOUT:-30000}
+
+      # 认证配置
+      - ENABLE_API_KEY_AUTH=${ENABLE_API_KEY_AUTH:-true}
+      - API_KEY=${API_KEY}
+
+      # 会话历史
+      - SESSION_HISTORY_ENABLED=${SESSION_HISTORY_ENABLED:-true}
+      - DATABASE_PATH=${DATABASE_PATH:-data/sessions.db}
+      - SESSION_RETENTION_DAYS=${SESSION_RETENTION_DAYS:-30}
+
+      # 多模态配置
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-20}
+      - ALLOWED_MIME_TYPES=${ALLOWED_MIME_TYPES:-image/*,audio/*,video/*,application/pdf}
+      - FILE_DOWNLOAD_TIMEOUT=${FILE_DOWNLOAD_TIMEOUT:-60}
+      - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-10}
+
+      # 监控配置
+      - ENABLE_METRICS=${ENABLE_METRICS:-true}
+      - METRICS_RETENTION_HOURS=${METRICS_RETENTION_HOURS:-24}
+
+      # CORS 配置
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://*.internal.local,http://localhost:*}
+
+      # 时区
+      - TZ=Asia/Shanghai
+
+    volumes:
+      # 数据持久化
+      - adk-data:/app/data
+
+    # Traefik 标签
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adk-middleware.rule=Host(`${INTERNAL_DOMAIN:-adk-api.internal.local}`) || PathPrefix(`/v1`)"
+      - "traefik.http.routers.adk-middleware.entrypoints=web"
+      - "traefik.http.routers.adk-middleware.service=adk-middleware"
+      - "traefik.http.services.adk-middleware.loadbalancer.server.port=8000"
+      - "traefik.http.services.adk-middleware.loadbalancer.healthcheck.path=/v1/health"
+      - "traefik.http.services.adk-middleware.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.middlewares.adk-compress.compress=true"
+      - "traefik.http.routers.adk-middleware.middlewares=adk-compress"
+      # Metrics 端点（仅内网）
+      - "traefik.http.routers.adk-metrics.rule=PathPrefix(`/v1/metrics`) || PathPrefix(`/metrics`)"
+      - "traefik.http.routers.adk-metrics.entrypoints=web"
+      - "traefik.http.routers.adk-metrics.middlewares=adk-ipwhitelist"
+
+    networks:
+      - adk-network
+    depends_on:
+      traefik:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # 可选：Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: adk-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis123}
+    volumes:
+      - redis-data:/data
+    networks:
+      - adk-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - with-redis
+
+  # 可选：监控 UI
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: adk-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - adk-network
+    profiles:
+      - with-monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: adk-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - GF_INSTALL_PLUGINS=redis-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - adk-network
+    profiles:
+      - with-monitoring
+
+networks:
+  adk-network:
+    name: adk-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  adk-data:
+    name: adk-data
+  redis-data:
+    name: adk-redis-data
+  prometheus-data:
+    name: adk-prometheus-data
+  grafana-data:
+    name: adk-grafana-data
+  traefik-logs:
+    name: adk-traefik-logs

@@ -1,0 +1,88 @@
+# Traefik 动态配置 - ADK Middleware API 内网部署
+# 用于内网环境的路由和服务发现
+
+http:
+  routers:
+    # 主 API 路由
+    adk-middleware-api:
+      rule: "Host(`adk-api.internal.local`) || PathPrefix(`/v1`)"
+      entryPoints:
+        - web
+      service: "adk-middleware"
+      middlewares:
+        - adk-stripprefix
+        - adk-headers
+      priority: 100
+
+    # 健康检查路由（无需认证）
+    adk-health:
+      rule: "PathPrefix(`/v1/health`)"
+      entryPoints:
+        - web
+      service: "adk-middleware"
+      priority: 200
+
+    # Prometheus metrics 路由（限制访问）
+    adk-metrics:
+      rule: "PathPrefix(`/v1/metrics`) || PathPrefix(`/metrics`)"
+      entryPoints:
+        - web
+      service: "adk-middleware"
+      middlewares:
+        - ip-whitelist
+      priority: 200
+
+  middlewares:
+    # 移除外部路径前缀（如果需要）
+    adk-stripprefix:
+      stripPrefix:
+        prefixes:
+          - "/api"
+        forceSlash: false
+
+    # 添加响应头
+    adk-headers:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Proto: "http"
+          X-Forwarded-Host: "adk-api.internal.local"
+        customResponseHeaders:
+          X-Server: "ADK-Middleware-Internal"
+          Access-Control-Max-Age: "86400"
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - "*"
+        accessControlExposeHeaders:
+          - "X-Request-ID"
+          - "X-Process-Time"
+        accessControlMaxAge: 86400
+
+    # IP 白名单（仅允许内网访问 metrics）
+    ip-whitelist:
+      ipWhiteList:
+        sourceRange:
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "192.168.0.0/16"
+          - "127.0.0.1/32"
+
+  services:
+    # ADK Middleware 服务负载均衡
+    adk-middleware:
+      loadBalancer:
+        servers:
+          - url: "http://adk-middleware:8000"
+        healthCheck:
+          path: "/v1/health"
+          interval: "10s"
+          timeout: "3s"
+          followRedirects: true
+        passHostHeader: true
+        responseForwarding:
+          flushInterval: "100ms"
+
+tls: {}
