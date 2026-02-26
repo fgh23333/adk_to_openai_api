@@ -1,193 +1,127 @@
+# ========================================
 # GitLab CI 配置 - ADK Middleware 内网部署
-# 需要配置的 GitLab Variables:
-# - ADK_BACKEND_URL: 内网 ADK 后端地址
-# - API_KEY (optional): API 密钥（可选）
+# ========================================
+# 使用说明：标记为 【TODO】 的地方需要根据实际项目修改
 
 variables:
-  DOCKER_DRIVER: overlay2
-  DOCKER_TLS_CERTDIR: "/certs"
-  IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
-  IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
-  # 内网 Docker Registry
-  REGISTRY_URL: registry.internal.local
+  PROJECT_NAME: "adk-middleware"  # 【TODO】项目名称
+  REPO_URL: "ssh://git@gitlab.flashhold.com:10022/drl/mcp/adk_to_openai_api.git"  # 【TODO】Git仓库地址
 
-# 定义构建阶段
 stages:
-  - lint
-  - build
-  - test
   - deploy
 
-# 默认配置
-default:
-  tags:
-    - docker
-  image: docker:24-cli
-
-# ==================== 镜像模板 ====================
-.docker-base:
-  services:
-    - docker:24-dind
+# ========================================
+# 部署模板（无需修改）
+# ========================================
+.deploy_template: &deploy_logic
+  stage: deploy
   before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
-
-# ==================== Lint 阶段 ====================
-lint:python:
-  stage: lint
-  image: python:3.12-slim
-  before_script:
-    - pip install ruff mypy
+    - apt-get update -qq && apt-get install -y openssh-client sshpass
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
   script:
-    - ruff check app/ --output-format=gitlab
-    - mypy app/ --ignore-missing-imports
-  allow_failure: true
-  artifacts:
-    reports:
-      codequality: gl-codequality.json
-    when: always
+    - |
+      sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "
+        # 环境变量（从CI传入，使用双引号让变量在本地展开）
+        export HOST_PORT=\"$DEPLOY_PORT\"
+        export HOST_DATA_PATH=\"$DATA_PATH\"
+        export CONTAINER_NAME=\"$CONTAINER_NAME\"
+        export URL_PREFIX=\"$URL_PREFIX\"
+        export PROJECT_NAME=\"$PROJECT_NAME\"
+        export SSH_HOST=\"$SSH_HOST\"
 
-lint:dockerfile:
-  stage: lint
-  image: hadolint/hadolint:latest-alpine
-  script:
-    - hadolint Dockerfile
-  allow_failure: true
+        # 内网 ADK 后端配置
+        export ADK_BACKEND_URL=\"$ADK_BACKEND_URL\"
+        export ADK_APP_NAME=\"${ADK_APP_NAME:-default_agent}\"
+        export ENABLE_API_KEY_AUTH=\"${ENABLE_API_KEY_AUTH:-true}\"
+        export API_KEY=\"$API_KEY\"
 
-# ==================== Build 阶段 ====================
-build:docker:
-  stage: build
-  extends: .docker-base
-  script:
-    # 构建镜像
-    - docker build -t $IMAGE_NAME -t $IMAGE_LATEST .
-    # 推送到内网 registry
-    - docker push $IMAGE_NAME
-    - docker push $IMAGE_LATEST
-    # 显示镜像信息
-    - docker images | grep adk
-  only:
-    - main
-    - internal-deploy
+        # 创建数据目录
+        mkdir -p $DATA_PATH
 
-# ==================== Test 阶段 ====================
-test:unit:
-  stage: test
-  image: python:3.12-slim
-  before_script:
-    - pip install -e ".[test]"
-  script:
-    - python -m pytest tests/ -v --junitxml=report.xml --cov=app --cov-report=xml --cov-report=term
-  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
-  artifacts:
-    reports:
-      junit: report.xml
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage.xml
-    when: always
-  allow_failure: true
+        # 拉取代码
+        if [ ! -d $CODE_PATH ]; then
+          # 代码目录不存在，创建并克隆
+          mkdir -p $CODE_PATH
+          git clone --branch $CI_COMMIT_REF_NAME $REPO_URL $CODE_PATH
+        else
+          # 目录已存在，进入目录
+          cd $CODE_PATH
+          if [ ! -d .git ]; then
+            # 目录存在但不是git仓库，报错退出
+            echo '错误: \$CODE_PATH 目录已存在且不是git仓库，请手动检查'
+            exit 1
+          fi
+          # 已有git仓库，拉取更新
+          git fetch origin
+          git checkout -B $CI_COMMIT_REF_NAME origin/$CI_COMMIT_REF_NAME
+          git reset --hard origin/$CI_COMMIT_REF_NAME
+        fi
 
-test:integration:
-  stage: test
-  image: docker:24-cli
-  services:
-    - docker:24-dind
+        cd $CODE_PATH
+
+        # 确保 web_gateway 网络存在
+        docker network ls | grep web_gateway || docker network create web_gateway
+
+        # 启动容器
+        docker compose -f docker-compose.internal.yml -p $CONTAINER_NAME up -d --build --force-recreate
+
+        # 健康检查（等待容器启动完成）
+        echo '等待服务启动...'
+        sleep 10
+        docker exec $CONTAINER_NAME curl -f http://localhost:8000/v1/health || exit 1
+
+        echo ''
+        echo '================================================'
+        echo '🚀 部署成功！'
+        echo '📖 API: http://$SSH_HOST:$DEPLOY_PORT$URL_PREFIX/v1/chat/completions'
+        echo '📖 Swagger: http://$SSH_HOST:$DEPLOY_PORT$URL_PREFIX/docs'
+        echo '💾 数据目录: $DATA_PATH'
+        echo '================================================'
+      "
+
+# ========================================
+# 预览环境 (internal-deploy 分支)
+# ========================================
+deploy_preview:
+  <<: *deploy_logic
   variables:
-    ADK_BACKEND_URL: http://mock-adk:8080
-  script:
-    # 启动测试环境
-    - docker-compose -f docker-compose.test.yml up -d
-    - docker-compose -f docker-compose.test.yml run test-runner pytest tests/integration/
-    - docker-compose -f docker-compose.test.yml down -v
-  only:
-    - main
-    - internal-deploy
-  allow_failure: true
-
-# ==================== Deploy 阶段 ====================
-deploy:staging:
-  stage: deploy
-  extends: .docker-base
-  script:
-    # 拉取最新镜像
-    - docker pull $IMAGE_LATEST
-    # 更新 staging 服务
-    - |
-      docker service update \
-        --image $IMAGE_LATEST \
-        --env-add ADK_BACKEND_URL=$STAGING_ADK_BACKEND_URL \
-        adk-staging_adk-middleware || \
-      docker service create \
-        --name adk-staging_adk-middleware \
-        --replicas 1 \
-        --publish 8000:8000 \
-        --env ADK_BACKEND_URL=$STAGING_ADK_BACKEND_URL \
-        --network adk-network \
-        $IMAGE_LATEST
-    # 等待服务就绪
-    - sleep 10
-    # 健康检查
-    - curl -f http://staging.internal.local:8000/v1/health || exit 1
-  environment:
-    name: staging
-    url: http://staging.internal.local
+    DEPLOY_PORT: "9501"           # 【TODO】预览环境端口
+    URL_PREFIX: "/adk-dev"        # 【TODO】预览环境路由前缀
+    CONTAINER_NAME: "adk-middleware-dev" # 【TODO】预览环境容器名
+    CODE_PATH: "/home/projects/adk_middleware_dev"        # 【TODO】代码存放路径
+    DATA_PATH: "/home/projects/adk_middleware_data/dev"   # 【TODO】数据存储路径
+    # 【TODO】预览环境 ADK 后端地址
+    ADK_BACKEND_URL: "http://adk-backend-dev.internal.local:8080"
   only:
     - internal-deploy
-  when: manual
 
-deploy:production:
-  stage: deploy
-  extends: .docker-base
-  script:
-    # 拉取镜像
-    - docker pull $IMAGE_NAME
-    # 备份当前版本
-    - docker tag $IMAGE_NAME $CI_REGISTRY_IMAGE:backup-$CI_COMMIT_SHORT_SHA
-    # 滚动更新
-    - |
-      docker service update \
-        --image $IMAGE_NAME \
-        --env ADK_BACKEND_URL=$PROD_ADK_BACKEND_URL \
-        --rollback-on-update-failure \
-        --update-delay 10s \
-        --update-parallelism 1 \
-        --update-monitor 30000ms \
-        adk-prod_adk-middleware
-    # 健康检查
-    - sleep 30
-    - curl -f http://prod.internal.local:8000/v1/health || exit 1
-  environment:
-    name: production
-    url: http://prod.internal.local
+# ========================================
+# 生产环境 (master 分支)
+# ========================================
+deploy_production:
+  <<: *deploy_logic
+  variables:
+    DEPLOY_PORT: "9500"           # 【TODO】生产环境端口
+    URL_PREFIX: "/adk"            # 【TODO】生产环境路由前缀
+    CONTAINER_NAME: "adk-middleware-prod" # 【TODO】生产环境容器名
+    CODE_PATH: "/home/projects/adk_middleware_prod"       # 【TODO】代码存放路径
+    DATA_PATH: "/home/projects/adk_middleware_data/prod"  # 【TODO】数据存储路径
+    # 【TODO】生产环境 ADK 后端地址
+    ADK_BACKEND_URL: "http://adk-backend-prod.internal.local:8080"
   only:
-    - main
-  when: manual
+    - master
+  when: manual  # 生产环境需要手动触发
 
-# ==================== 清理任务 ====================
-cleanup:old-images:
-  stage: deploy
-  extends: .docker-base
-  script:
-    # 删除 30 天前的镜像
-    - |
-      docker images --format "{{.ID}} {{.CreatedAt}}" | \
-      awk '$2 < "'$(date -d '30 days ago' '+%Y-%m-%d')'" {print $1}' | \
-      xargs -r docker rmi -f || true
-  only:
-    - schedules
-  allow_failure: true
-
-# ==================== 通知 ====================
-.notify_failure:
-  after_script:
-    - |
-      curl -X POST "$WEBHOOK_URL" \
-        -H "Content-Type: application/json" \
-        -d "{\"text\":\"❌ Pipeline $CI_PIPELINE_ID failed: $CI_JOB_NAME\nProject: $CI_PROJECT_PATH\nBranch: $CI_COMMIT_REF_NAME\nURL: $CI_PIPELINE_URL\"}"
-
-.notify_success:
-  after_script:
-    - |
-      curl -X POST "$WEBHOOK_URL" \
-        -H "Content-Type: application/json" \
-        -d "{\"text\":\"✅ Pipeline $CI_PIPELINE_ID succeeded: $CI_JOB_NAME\nProject: $CI_PROJECT_PATH\nBranch: $CI_COMMIT_REF_NAME\"}"
+# ========================================
+# GitLab 变量配置（在 GitLab 项目设置中配置）
+# ========================================
+# 必填变量：
+# SSH_HOST      - 部署目标服务器 IP (如: 192.168.1.100)
+# SSH_USER      - SSH 登录用户名 (如: root)
+# SSH_PASSWORD  - SSH 登录密码（勾选 Masked）
+#
+# 可选变量：
+# API_KEY       - API 认证密钥 (如: sk-internal:xxxxx)
+# ADK_APP_NAME  - ADK 应用名称 (默认: default_agent)
+# ENABLE_API_KEY_AUTH - 是否启用API Key认证 (默认: true)

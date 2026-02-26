@@ -8,30 +8,37 @@
 
 ### 1. 配置环境变量
 
+创建 `.env` 文件（可选，用于本地测试）：
+
 ```bash
 cp config/internal.example.env .env
 # 编辑 .env 文件，配置内网 ADK 后端地址等
 ```
 
-### 2. 启动服务
+### 2. 确保 Traefik 网络存在
 
 ```bash
-# 使用 Traefik 启动完整服务
-docker-compose -f docker-compose.internal.yml up -d
-
-# 查看服务状态
-docker-compose -f docker-compose.internal.yml ps
-
-# 查看日志
-docker-compose -f docker-compose.internal.yml logs -f
+docker network create web_gateway
 ```
 
-### 3. 访问服务
+### 3. 本地测试启动
 
-- API 服务: http://adk-api.internal.local/v1
-- Traefik Dashboard: http://localhost:8080/dashboard/
-- Prometheus: http://localhost:9090 (需启用 --profile with-monitoring)
-- Grafana: http://localhost:3000 (需启用 --profile with-monitoring)
+```bash
+export CONTAINER_NAME=adk-middleware-test
+export HOST_PORT=8000
+export HOST_DATA_PATH=./data
+export URL_PREFIX=/adk
+export PROJECT_NAME=adk-middleware
+export ADK_BACKEND_URL=http://your-adk-backend:8080
+
+docker compose -f docker-compose.internal.yml up -d --build
+```
+
+### 4. 访问服务
+
+- API 服务: http://your-server:9500/adk/v1/chat/completions
+- Swagger 文档: http://your-server:9500/adk/docs
+- 健康检查: http://your-server:9500/adk/v1/health
 
 ## 架构
 
@@ -39,6 +46,7 @@ docker-compose -f docker-compose.internal.yml logs -f
                     ┌─────────────────┐
                     │   Traefik       │
                     │  (反向代理)      │
+                    │   web_gateway   │
                     └────────┬────────┘
                              │
                     ┌────────▼────────┐
@@ -58,44 +66,146 @@ docker-compose -f docker-compose.internal.yml logs -f
 
 在 GitLab 项目设置中配置以下变量：
 
-| 变量名 | 说明 | 示例值 |
-|--------|------|--------|
-| `ADK_BACKEND_URL` | 内网 ADK 后端地址 | `http://adk-backend.internal.local:8080` |
-| `STAGING_ADK_BACKEND_URL` | Staging 环境 ADK 地址 | `http://adk-backend-staging:8080` |
-| `PROD_ADK_BACKEND_URL` | 生产环境 ADK 地址 | `http://adk-backend-prod:8080` |
-| `API_KEY` | API 认证密钥 | `sk-internal:xxxxx` |
-| `CI_REGISTRY_USER` | Registry 用户名 | `gitlab-ci-token` |
-| `CI_REGISTRY_PASSWORD` | Registry 密码 | `${CI_JOB_TOKEN}` |
+| 变量名 | 说明 | 示例值 | 是否必填 |
+|--------|------|--------|----------|
+| `SSH_HOST` | 部署目标服务器 IP | `192.168.1.100` | ✅ |
+| `SSH_USER` | SSH 登录用户名 | `root` | ✅ |
+| `SSH_PASSWORD` | SSH 登录密码 | `your-password` | ✅ |
+| `API_KEY` | API 认证密钥 | `sk-internal:xxxxx` | ❌ |
+| `ADK_BACKEND_URL` | 内网 ADK 后端地址 | `http://adk-backend:8080` | ❌ |
+| `ADK_APP_NAME` | ADK 应用名称 | `default_agent` | ❌ |
 
 ### 部署流程
 
-1. **Lint**: 代码检查 (ruff, mypy, hadolint)
-2. **Build**: 构建 Docker 镜像并推送到内网 Registry
-3. **Test**: 单元测试和集成测试
-4. **Deploy**: 部署到 Staging/Production
+推送代码后，GitLab CI 会自动：
 
-## Traefik 配置
+1. **预览环境** (`internal-deploy` 分支): 自动部署到测试环境
+2. **生产环境** (`master` 分支): 需要手动触发部署
 
-### 动态配置
+### 环境配置
 
-Traefik 动态配置位于 `traefik/dynamic.yml`，包含：
+| 环境 | 分支 | 端口 | 路由前缀 | 容器名 |
+|------|------|------|----------|--------|
+| 预览 | `internal-deploy` | 9501 | `/adk-dev` | `adk-middleware-dev` |
+| 生产 | `master` | 9500 | `/adk` | `adk-middleware-prod` |
 
-- 路由规则
-- 中间件（认证、限流等）
-- 负载均衡配置
-- 健康检查
+### 修改配置
 
-### 修改域名
+编辑 `.gitlab-ci.yml` 中的以下变量：
 
-编辑 `.env` 文件中的 `INTERNAL_DOMAIN` 变量：
+```yaml
+deploy_preview:
+  variables:
+    DEPLOY_PORT: "9501"           # 修改预览环境端口
+    URL_PREFIX: "/adk-dev"        # 修改预览环境路由前缀
+    ADK_BACKEND_URL: "http://your-adk-dev:8080"  # 修改预览环境 ADK 地址
 
-```bash
-INTERNAL_DOMAIN=your-api.internal.local
+deploy_production:
+  variables:
+    DEPLOY_PORT: "9500"           # 修改生产环境端口
+    URL_PREFIX: "/adk"            # 修改生产环境路由前缀
+    ADK_BACKEND_URL: "http://your-adk-prod:8080"  # 修改生产环境 ADK 地址
 ```
 
-## 监控
+## Traefik 集成
 
-### Prometheus Metrics
+### 路由配置
+
+服务通过 Docker Compose labels 自动注册到 Traefik：
+
+- 主路由: `PathPrefix($URL_PREFIX)` → 去除前缀 → 转发到容器:8000
+- Metrics 路由: `PathPrefix(/v1/metrics)` → 直接转发
+
+### 中间件
+
+- **Strip Prefix**: 去除 URL 前缀
+- **CORS**: 跨域支持
+- **Compress**: 响应压缩
+- **Health Check**: 健康检查 (`/v1/health`)
+
+## 故障排查
+
+### 查看 Docker 日志
+
+```bash
+# 查看容器日志
+docker logs adk-middleware-prod
+
+# 查看实时日志
+docker logs -f adk-middleware-prod
+```
+
+### 进入容器调试
+
+```bash
+# 进入容器 shell
+docker exec -it adk-middleware-prod sh
+
+# 测试健康检查
+docker exec adk-middleware-prod curl http://localhost:8000/v1/health
+
+# 查看环境变量
+docker exec adk-middleware-prod env | grep ADK
+```
+
+### 重新部署
+
+```bash
+# 在服务器上手动重新部署
+cd /home/projects/adk_middleware_prod
+git pull
+docker compose -f docker-compose.internal.yml -p adk-middleware-prod up -d --build --force-recreate
+```
+
+### 查看 Traefik 状态
+
+```bash
+# 查看 Traefik 日志
+docker logs traefik
+
+# 查看 Traefik 路由配置
+curl http://traefik-server:8080/http/routers
+```
+
+## API 使用示例
+
+### 通过 Traefik 代理访问
+
+```bash
+# Chat Completion
+curl -X POST http://your-server:9500/adk/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-internal:xxxxx" \
+  -d '{
+    "model": "agent",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'
+
+# 健康检查
+curl http://your-server:9500/adk/v1/health
+```
+
+### 直连端口访问（兜底方案）
+
+```bash
+# 直接访问容器端口
+curl -X POST http://your-server:9500/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "agent", "messages": [{"role": "user", "content": "你好"}]}'
+```
+
+## 数据持久化
+
+数据存储在配置的数据目录中：
+
+- **预览环境**: `/home/projects/adk_middleware_data/dev`
+- **生产环境**: `/home/projects/adk_middleware_data/prod`
+
+包含内容：
+- SQLite 数据库: `sessions.db`
+- 其他缓存数据
+
+## 监控
 
 访问 `/v1/metrics` 获取 Prometheus 格式的指标：
 
@@ -103,56 +213,15 @@ INTERNAL_DOMAIN=your-api.internal.local
 - `http_requests_total` - 请求总数
 - `active_requests` - 当前活跃请求数
 
-### Grafana Dashboard
-
-启用监控后，导入 dashboard：
-
-```bash
-docker-compose -f docker-compose.internal.yml --profile with-monitoring up -d
-```
-
-## 故障排查
-
-### 查看日志
-
-```bash
-# 所有服务
-docker-compose -f docker-compose.internal.yml logs
-
-# 特定服务
-docker-compose -f docker-compose.internal.yml logs adk-middleware
-docker-compose -f docker-compose.internal.yml logs traefik
-```
-
-### 健康检查
-
-```bash
-# API 健康检查
-curl http://localhost:8000/v1/health
-
-# Traefik health check
-curl http://localhost:8080/ping
-```
-
-### 重启服务
-
-```bash
-# 重启单个服务
-docker-compose -f docker-compose.internal.yml restart adk-middleware
-
-# 重建服务
-docker-compose -f docker-compose.internal.yml up -d --build adk-middleware
-```
-
 ## 与外网版本的区别
 
 | 功能 | 外网版本 | 内网版本 |
 |------|----------|----------|
 | ADK 后端 | 外网地址 | 内网地址 |
-| 反向代理 | 无 | Traefik |
-| CI/CD | - | GitLab CI |
-| 监控 | 基础 | Prometheus + Grafana |
-| 部署方式 | Docker Compose | Docker Compose + Swarm |
+| 反向代理 | 无 | Traefik (web_gateway) |
+| CI/CD | - | GitLab CI (SSH 部署) |
+| 部署方式 | Docker Compose | Docker Compose + SSH |
+| 路由前缀 | 无 | `/adk` 或 `/adk-dev` |
 
 ## 更新记录
 
