@@ -307,16 +307,20 @@ class ADKClient:
     
     async def _convert_to_adk_request(self, request: ChatCompletionRequest) -> ADKRunRequest:
         """Convert OpenAI request to ADK request format."""
+        # 解析 model 字段，提取 app_name 和 agent_name
+        app_name, agent_name = settings.parse_model(request.model or self.default_app_name)
+        logger.info(f"Parsed model: app={app_name}, agent={agent_name}")
+
         # Extract the last user message (ADK is stateful)
         last_message = request.messages[-1] if request.messages else None
-        
+
         if not last_message or last_message.role != "user":
             raise ValueError("Last message must be from user")
-        
-        # Generate session ID from user field
+
+        # Generate session ID from user field and agent
         user_id = request.user or "anonymous"
         session_id = f"session_{user_id}"
-        
+
         # Process content (handle multimodal)
         if isinstance(last_message.content, str):
             # Simple text content
@@ -327,7 +331,7 @@ class ADKClient:
             logger.info(f"Processing multimodal content with {len(last_message.content)} parts")
             for i, part in enumerate(last_message.content):
                 logger.info(f"Part {i}: type={part.type}, content={str(part)[:100]}...")
-            
+
             _, adk_parts = await self.multimodal_processor.process_content(last_message.content)
             logger.info(f"Processed into {len(adk_parts)} ADK parts")
             for i, part in enumerate(adk_parts):
@@ -337,22 +341,27 @@ class ADKClient:
                     logger.info(f"ADK Part {i}: inlineData mimeType={part.inlineData.mimeType}, dataLength={len(part.inlineData.data)}")
                 else:
                     logger.info(f"ADK Part {i}: {part}")
-        
+
         # Create ADK message
         adk_message = ADKMessage(
             role="user",
             parts=adk_parts
         )
-        
-        # Create ADK request - try different possible formats
+
+        # Create ADK request - appName 是应用名，不是 agent 名
         adk_request = ADKRunRequest(
-            appName=request.model or self.default_app_name,
+            appName=app_name,  # 使用解析出的应用名
             userId=user_id,
             sessionId=session_id,
             streaming=request.stream,
             newMessage=adk_message
         )
-        
+
+        # 存储原始 model 字符串用于响应
+        adk_request._original_model = request.model or self.default_app_name
+        adk_request._app_name = app_name
+        adk_request._agent_name = agent_name
+
         return adk_request
     
     def _convert_from_adk_response(self, adk_response, model: str) -> ChatCompletionResponse:

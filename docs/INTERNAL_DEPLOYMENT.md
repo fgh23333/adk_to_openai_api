@@ -56,15 +56,45 @@ ADK_BACKEND_MAPPING=app1:http://backend1:8080,app2:http://backend2:8080
 ADK_BACKEND_MAPPING='{"app1":"http://backend1:8080","app2":"http://backend2:8080"}'
 ```
 
-**使用方式**：
-在 API 请求中通过 `model` 字段指定应用名：
+#### Model 格式说明
+
+由于不同应用下可能有同名 agent，使用 `app_name/agent_name` 格式来区分：
+
+| 格式 | 说明 | 示例 |
+|------|------|------|
+| `app_name/agent_name` | 完整格式，推荐使用 | `app1/chat_agent`, `app2/chat_agent` |
+| `agent_name` | 仅 agent 名，使用默认应用 | `chat_agent` (使用 ADK_APP_NAME) |
+
+**API 请求示例**：
 ```bash
+# 调用 app1 的 chat_agent
 curl -X POST http://your-server:9600/adk/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "app1",
+    "model": "app1/chat_agent",
     "messages": [{"role": "user", "content": "你好"}]
   }'
+
+# 调用 app2 的 chat_agent（不同应用下的同名 agent）
+curl -X POST http://your-server:9600/adk/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "app2/chat_agent",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'
+```
+
+**响应中的 model 字段**：
+响应会保持请求中的完整 model 格式：
+```json
+{
+  "id": "chatcmpl-123",
+  "object": "chat.completion",
+  "created": 1234567890,
+  "model": "app1/chat_agent",
+  "choices": [...]
+}
+```
 | `ADK_BACKEND_MAPPING` | 多应用映射表 | 见下方说明 |
 
 ### 环境配置

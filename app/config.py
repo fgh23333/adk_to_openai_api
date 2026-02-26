@@ -65,6 +65,40 @@ class Settings(BaseSettings):
 
         return mapping
 
+    def parse_model(self, model: str) -> tuple[str, str]:
+        """
+        解析 model 字符串，提取 app_name 和 agent_name
+
+        支持格式:
+        - app_name/agent_name (推荐，明确指定应用和agent)
+        - agent_name (使用默认应用)
+
+        Args:
+            model: model 字符串
+
+        Returns:
+            (app_name, agent_name) 元组
+        """
+        if "/" in model:
+            # app_name/agent_name 格式
+            parts = model.split("/", 1)
+            return parts[0], parts[1]
+        # 只有 agent_name，使用默认应用
+        return self.adk_app_name, model
+
+    def format_model(self, app_name: str, agent_name: str) -> str:
+        """
+        格式化 model 字符串，返回给前端
+
+        Args:
+            app_name: 应用名
+            agent_name: agent 名
+
+        Returns:
+            格式化后的 model 字符串 (app_name/agent_name)
+        """
+        return f"{app_name}/{agent_name}"
+
     def get_backend_url(self, app_name: str) -> str:
         """
         根据应用名获取对应的后端地址
