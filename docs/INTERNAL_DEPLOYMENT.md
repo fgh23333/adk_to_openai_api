@@ -45,8 +45,8 @@ docker compose up -d --build
 
 | 环境 | 分支 | 端口 | 路由前缀 |
 |------|------|------|----------|
-| 预览 | `internal-deploy` | 9501 | `/adk-dev` |
-| 生产 | `master` | 9500 | `/adk` |
+| 预览 | `internal-deploy` | 9601 | `/adk-dev` |
+| 生产 | `master` | 9600 | `/adk` |
 
 ### 修改配置
 

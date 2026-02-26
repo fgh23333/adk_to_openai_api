@@ -86,7 +86,7 @@ stages:
 deploy_preview:
   <<: *deploy_logic
   variables:
-    DEPLOY_PORT: "9501"           # 【TODO】预览环境端口
+    DEPLOY_PORT: "9601"           # 【TODO】预览环境端口
     URL_PREFIX: "/adk-dev"        # 【TODO】预览环境路由前缀
     CONTAINER_NAME: "adk-middleware-dev" # 【TODO】预览环境容器名
     CODE_PATH: "/home/projects/adk_middleware_dev"        # 【TODO】代码存放路径
@@ -102,7 +102,7 @@ deploy_preview:
 deploy_production:
   <<: *deploy_logic
   variables:
-    DEPLOY_PORT: "9500"           # 【TODO】生产环境端口
+    DEPLOY_PORT: "9600"           # 【TODO】生产环境端口
     URL_PREFIX: "/adk"            # 【TODO】生产环境路由前缀
     CONTAINER_NAME: "adk-middleware-prod" # 【TODO】生产环境容器名
     CODE_PATH: "/home/projects/adk_middleware_prod"       # 【TODO】代码存放路径
