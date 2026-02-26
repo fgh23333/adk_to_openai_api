@@ -46,6 +46,8 @@ docker compose up -d --build
 
 当有多个 ADK 应用需要转发时，配置 `ADK_BACKEND_MAPPING` 环境变量：
 
+#### 配置格式
+
 **方式一：简单格式**
 ```bash
 ADK_BACKEND_MAPPING=app1:http://backend1:8080,app2:http://backend2:8080
@@ -54,6 +56,49 @@ ADK_BACKEND_MAPPING=app1:http://backend1:8080,app2:http://backend2:8080
 **方式二：JSON 格式**
 ```bash
 ADK_BACKEND_MAPPING='{"app1":"http://backend1:8080","app2":"http://backend2:8080"}'
+```
+
+#### Docker Compose 配置示例
+
+```yaml
+services:
+  adk-middleware:
+    environment:
+      # 多个后端映射
+      - ADK_BACKEND_MAPPING=app1:http://adk-1.internal.local:8080,app2:http://adk-2.internal.local:8080,app3:http://adk-3.internal.local:8080
+      # 或者使用 JSON 格式
+      - ADK_BACKEND_MAPPING={"app1":"http://adk-1.internal.local:8080","app2":"http://adk-2.internal.local:8080"}
+```
+
+#### GitLab CI 配置示例
+
+在 GitLab 项目设置 → CI/CD → Variables 中添加：
+
+| 变量名 | 值 | 类型 |
+|--------|---|------|
+| `ADK_BACKEND_MAPPING` | `app1:http://adk-1:8080,app2:http://adk-2:8080` | 变量 |
+
+或者在 `.gitlab-ci.yml` 中直接配置：
+
+```yaml
+deploy_production:
+  variables:
+    ADK_BACKEND_MAPPING: "app1:http://adk-prod-1:8080,app2:http://adk-prod-2:8080"
+```
+
+#### 配置示例
+
+假设有 3 个 ADK 后端：
+
+| 应用名 | 后端地址 | Agent |
+|--------|----------|-------|
+| `customer-service` | `http://adk-cs.internal.local:8080` | `chat_agent` |
+| `sales-assistant` | `http://adk-sales.internal.local:8080` | `chat_agent` |
+| `tech-support` | `http://adk-tech.internal.local:8080` | `faq_agent` |
+
+配置：
+```bash
+ADK_BACKEND_MAPPING=customer-service:http://adk-cs.internal.local:8080,sales-assistant:http://adk-sales.internal.local:8080,tech-support:http://adk-tech.internal.local:8080
 ```
 
 #### Model 格式说明
