@@ -7,7 +7,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: adk-middleware:latest
     container_name: ${CONTAINER_NAME:-adk-middleware}
     restart: unless-stopped
 
