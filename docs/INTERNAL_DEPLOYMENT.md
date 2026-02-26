@@ -39,12 +39,18 @@ docker compose up -d --build
 | `SSH_HOST` | 部署服务器 IP | `192.168.1.100` |
 | `SSH_USER` | SSH 用户名 | `root` |
 | `SSH_PASSWORD` | SSH 密码 | - |
-| `ADK_BACKEND_URL` | 默认 ADK 后端地址 | `http://adk-backend:8080` |
-| `ADK_BACKEND_MAPPING` | 多应用映射表 | 见下方说明 |
+| `ADK_BACKEND_MAPPING` | 多后端映射表 | 见下方说明 |
 
 ### 多应用后端配置
 
-当有多个 ADK 应用需要转发时，配置 `ADK_BACKEND_MAPPING` 环境变量：
+使用 `ADK_BACKEND_MAPPING` 环境变量配置后端映射表：
+
+**单个后端**：
+```bash
+ADK_BACKEND_MAPPING=default:http://host.docker.internal:8000
+```
+
+**多个后端**（不同应用下可能有同名 agent）：
 
 #### 配置格式
 

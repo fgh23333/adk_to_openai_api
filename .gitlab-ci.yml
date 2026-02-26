@@ -31,9 +31,8 @@ stages:
         export SSH_HOST=\"$SSH_HOST\"
 
         # 内网 ADK 后端配置
-        export ADK_BACKEND_URL=\"$ADK_BACKEND_URL\"
-        export ADK_APP_NAME=\"${ADK_APP_NAME:-default_agent}\"
         export ADK_BACKEND_MAPPING=\"$ADK_BACKEND_MAPPING\"
+        export ADK_APP_NAME=\"${ADK_APP_NAME:-default}\"
         export ENABLE_API_KEY_AUTH=\"${ENABLE_API_KEY_AUTH:-true}\"
         export API_KEY=\"$API_KEY\"
 
@@ -92,8 +91,8 @@ deploy_preview:
     CONTAINER_NAME: "adk-middleware-dev" # 【TODO】预览环境容器名
     CODE_PATH: "/home/projects/adk_middleware_dev"        # 【TODO】代码存放路径
     DATA_PATH: "/home/projects/adk_middleware_data/dev"   # 【TODO】数据存储路径
-    # 【TODO】预览环境 ADK 后端地址
-    ADK_BACKEND_URL: "http://adk-backend-dev.internal.local:8080"
+    # 【TODO】预览环境 ADK 后端映射（应用名:地址）
+    ADK_BACKEND_MAPPING: "default:http://adk-backend-dev.internal.local:8080"
   only:
     - internal-deploy
 
@@ -108,8 +107,8 @@ deploy_production:
     CONTAINER_NAME: "adk-middleware-prod" # 【TODO】生产环境容器名
     CODE_PATH: "/home/projects/adk_middleware_prod"       # 【TODO】代码存放路径
     DATA_PATH: "/home/projects/adk_middleware_data/prod"  # 【TODO】数据存储路径
-    # 【TODO】生产环境 ADK 后端地址
-    ADK_BACKEND_URL: "http://adk-backend-prod.internal.local:8080"
+    # 【TODO】生产环境 ADK 后端映射（应用名:地址）
+    ADK_BACKEND_MAPPING: "default:http://adk-backend-prod.internal.local:8080"
   only:
     - master
 
@@ -123,5 +122,6 @@ deploy_production:
 #
 # 可选变量：
 # API_KEY       - API 认证密钥 (如: sk-internal:xxxxx)
-# ADK_APP_NAME  - ADK 应用名称 (默认: default_agent)
+# ADK_BACKEND_MAPPING - 多后端映射 (如: app1:http://adk-1:8080,app2:http://adk-2:8080)
+# ADK_APP_NAME  - 默认应用名 (默认: default)
 # ENABLE_API_KEY_AUTH - 是否启用API Key认证 (默认: true)
