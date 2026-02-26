@@ -39,7 +39,33 @@ docker compose up -d --build
 | `SSH_HOST` | 部署服务器 IP | `192.168.1.100` |
 | `SSH_USER` | SSH 用户名 | `root` |
 | `SSH_PASSWORD` | SSH 密码 | - |
-| `ADK_BACKEND_URL` | ADK 后端地址 | `http://adk-backend:8080` |
+| `ADK_BACKEND_URL` | 默认 ADK 后端地址 | `http://adk-backend:8080` |
+| `ADK_BACKEND_MAPPING` | 多应用映射表 | 见下方说明 |
+
+### 多应用后端配置
+
+当有多个 ADK 应用需要转发时，配置 `ADK_BACKEND_MAPPING` 环境变量：
+
+**方式一：简单格式**
+```bash
+ADK_BACKEND_MAPPING=app1:http://backend1:8080,app2:http://backend2:8080
+```
+
+**方式二：JSON 格式**
+```bash
+ADK_BACKEND_MAPPING='{"app1":"http://backend1:8080","app2":"http://backend2:8080"}'
+```
+
+**使用方式**：
+在 API 请求中通过 `model` 字段指定应用名：
+```bash
+curl -X POST http://your-server:9600/adk/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "app1",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'
+| `ADK_BACKEND_MAPPING` | 多应用映射表 | 见下方说明 |
 
 ### 环境配置
 

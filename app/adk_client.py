@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class ADKClient:
     def __init__(self):
-        self.adk_host = settings.adk_host
+        self.adk_host = settings.adk_host  # 默认后端地址
         self.default_app_name = settings.adk_app_name
         self.multimodal_processor = MultimodalProcessor()
         self._session_cache = set()  # Simple cache for created sessions
@@ -26,10 +26,14 @@ class ADKClient:
         # Connection pool for better performance
         self._http_client: Optional[httpx.AsyncClient] = None
         self._http_limits = httpx.Limits(
-            max_connections=100,      # Total max connections
-            max_keepalive_connections=20,  # Keep-alive connections
-            keepalive_expiry=30.0     # Keep-alive expiry time
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=30.0
         )
+
+    def get_backend_url(self, app_name: str) -> str:
+        """根据应用名获取对应的后端地址"""
+        return settings.get_backend_url(app_name)
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with connection pooling."""
@@ -61,18 +65,21 @@ class ADKClient:
         """Create a non-streaming chat completion."""
         adk_request = await self._convert_to_adk_request(request)
 
+        # 获取对应的后端地址
+        backend_url = self.get_backend_url(adk_request.appName)
+
         # Ensure session exists before running
-        await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId)
+        await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId, backend_url)
 
         # Log the request for debugging
         request_data = adk_request.to_adk_format()
-        logger.info(f"Sending ADK request to {self.adk_host}/run")
+        logger.info(f"Sending ADK request to {backend_url}/run (app={adk_request.appName})")
         logger.debug(f"Request data: {request_data}")
 
         try:
             client = await self._get_client()
             response = await client.post(
-                f"{self.adk_host}/run",
+                f"{backend_url}/run",
                 json=request_data
             )
             logger.info(f"ADK response status: {response.status_code}")
@@ -96,12 +103,15 @@ class ADKClient:
         adk_request = await self._convert_to_adk_request(request)
         adk_request.streaming = True  # Enable ADK streaming
 
+        # 获取对应的后端地址
+        backend_url = self.get_backend_url(adk_request.appName)
+
         # Ensure session exists before running
-        await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId)
+        await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId, backend_url)
 
         # Log the request for debugging
         request_data = adk_request.to_adk_format()
-        logger.info(f"Sending ADK request to {self.adk_host}/run_sse (real streaming)")
+        logger.info(f"Sending ADK request to {backend_url}/run_sse (real streaming, app={adk_request.appName})")
 
         # Track sent content for deduplication
         sent_content_tracker = {}
@@ -112,7 +122,7 @@ class ADKClient:
             client = await self._get_client()
             async with client.stream(
                 "POST",
-                f"{self.adk_host}/run_sse",
+                f"{backend_url}/run_sse",
                 json=request_data,
                 headers={"Accept": "text/event-stream"}
             ) as response:
@@ -555,7 +565,7 @@ class ADKClient:
             logger.error(f"Error converting ADK event to OpenAI chunk: {e}")
             return None
     
-    async def _ensure_session(self, app_name: str, user_id: str, session_id: str):
+    async def _ensure_session(self, app_name: str, user_id: str, session_id: str, backend_url: str = None):
         """Ensure session exists before running agent."""
         session_key = f"{app_name}:{user_id}:{session_id}"
 
@@ -563,12 +573,15 @@ class ADKClient:
             logger.debug(f"Session already in cache: {session_key}")
             return
 
+        if backend_url is None:
+            backend_url = self.get_backend_url(app_name)
+
         try:
             client = await self._get_client()
             # Create session using ADK API
-            logger.info(f"Creating ADK session: {session_id} for app={app_name}, user={user_id}")
+            logger.info(f"Creating ADK session: {session_id} for app={app_name}, user={user_id} at {backend_url}")
             response = await client.post(
-                f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions",
+                f"{backend_url}/apps/{app_name}/users/{user_id}/sessions",
                 json={"sessionId": session_id}
             )
 
@@ -588,15 +601,18 @@ class ADKClient:
             logger.error(f"Error ensuring ADK session: {e}")
             # Don't raise here, let the main request continue
 
-    async def _delete_session(self, app_name: str, user_id: str, session_id: str) -> bool:
+    async def _delete_session(self, app_name: str, user_id: str, session_id: str, backend_url: str = None) -> bool:
         """Delete an ADK session."""
         session_key = f"{app_name}:{user_id}:{session_id}"
 
+        if backend_url is None:
+            backend_url = self.get_backend_url(app_name)
+
         try:
             client = await self._get_client()
-            logger.info(f"Deleting ADK session: {session_id}")
+            logger.info(f"Deleting ADK session: {session_id} at {backend_url}")
             response = await client.delete(
-                f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+                f"{backend_url}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
             )
 
             if response.status_code in [200, 204, 404]:

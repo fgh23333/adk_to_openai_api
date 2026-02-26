@@ -24,6 +24,7 @@ services:
       # ADK 后端配置
       - ADK_BACKEND_URL=${ADK_BACKEND_URL:-http://host.docker.internal:8000}
       - ADK_APP_NAME=${ADK_APP_NAME:-agent}
+      - ADK_BACKEND_MAPPING=${ADK_BACKEND_MAPPING:-}
       - ADK_TIMEOUT=${ADK_TIMEOUT:-120000}
       - ADK_CONNECT_TIMEOUT=${ADK_CONNECT_TIMEOUT:-30000}
 
