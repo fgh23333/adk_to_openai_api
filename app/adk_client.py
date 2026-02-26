@@ -293,17 +293,93 @@ class ADKClient:
         }
         return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-    async def list_models(self) -> ListModelsResponse:
-        """List available models (ADK agents)."""
-        # For now, return a default model. In a real implementation, 
-        # you might want to query ADK for available agents.
-        model = ModelInfo(
-            id=self.default_app_name,
-            created=int(time.time()),
-            owned_by="adk"
-        )
-        
-        return ListModelsResponse(data=[model])
+    async def list_apps(self, backend_url: str = None) -> list:
+        """
+        从 ADK 后端获取应用列表
+
+        Args:
+            backend_url: 指定的后端地址，默认使用 adk_host
+
+        Returns:
+            应用列表，格式: [{"name": "app1", "agents": ["agent1", ...]}, ...]
+        """
+        if backend_url is None:
+            backend_url = self.adk_host
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"{backend_url}/list-apps")
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"Got apps list from {backend_url}/list-apps: {data}")
+            return data
+        except Exception as e:
+            logger.error(f"Failed to get apps list: {e}")
+            return []
+
+    async def list_models(self, request_model: str = None) -> ListModelsResponse:
+        """
+        List available models (ADK agents).
+
+        动态从后端获取应用列表，并拼接成 app_name/agent_name 格式
+
+        Args:
+            request_model: 请求中的 model 字段（可选），用于确定从哪个后端获取
+        """
+        models = []
+
+        # 如果有指定 model，解析出 app_name 并从对应后端获取
+        app_name = None
+        if request_model and "/" in request_model:
+            app_name, _ = settings.parse_model(request_model)
+        elif request_model:
+            # 只有 agent 名，使用默认应用
+            app_name = settings.adk_app_name
+
+        # 确定要查询的后端地址
+        if app_name:
+            backend_url = self.get_backend_url(app_name)
+        else:
+            # 没有指定应用，使用默认后端
+            backend_url = self.adk_host
+
+        # 如果配置了模板，尝试从模板后端获取应用列表
+        apps_data = await self.list_apps(backend_url)
+
+        # 解析返回数据并拼接模型格式
+        # 假设返回格式: [{"name": "app1", "agents": ["agent1", "agent2"]}, ...]
+        # 或者: ["app1", "app2"] (没有 agent 信息，使用默认 agent)
+        if isinstance(apps_data, list):
+            for app in apps_data:
+                if isinstance(app, dict):
+                    app_name = app.get("name", "")
+                    agents = app.get("agents", ["agent"])  # 默认 agent
+                    for agent in agents:
+                        model_id = settings.format_model(app_name, agent)
+                        models.append(ModelInfo(
+                            id=model_id,
+                            created=int(time.time()),
+                            owned_by=app_name
+                        ))
+                elif isinstance(app, str):
+                    # 简单字符串列表，使用默认 agent
+                    model_id = settings.format_model(app, "agent")
+                    models.append(ModelInfo(
+                        id=model_id,
+                        created=int(time.time()),
+                        owned_by=app
+                    ))
+
+        # 如果没有获取到任何模型，返回默认模型
+        if not models:
+            default_model = request_model or settings.format_model(settings.adk_app_name, "agent")
+            models.append(ModelInfo(
+                id=default_model,
+                created=int(time.time()),
+                owned_by="adk"
+            ))
+
+        return ListModelsResponse(data=models)
     
     async def _convert_to_adk_request(self, request: ChatCompletionRequest) -> ADKRunRequest:
         """Convert OpenAI request to ADK request format."""

@@ -758,11 +758,23 @@ def _save_message_to_history(
 
 @app.get("/v1/models")
 async def list_models(
+    http_request: Request,
     api_key_valid: bool = Depends(verify_api_key_dependency)
 ) -> ListModelsResponse:
-    """List available models (ADK agents)."""
+    """
+    List available models (ADK agents).
+
+    支持通过 query 参数指定应用:
+    - GET /v1/models?model=app_name/agent_name - 从指定应用的后端获取
+    - GET /v1/models - 从默认后端获取
+    """
     logger.info("Models list request")
-    return await adk_client.list_models()
+
+    # 尝试从 query 参数获取 model（用于确定从哪个后端获取）
+    query_model = http_request.query_params.get("model")
+    logger.info(f"Query model: {query_model}")
+
+    return await adk_client.list_models(request_model=query_model)
 
 
 @app.get("/v1/health")
