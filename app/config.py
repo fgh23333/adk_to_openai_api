@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     # 格式: app1:backend1,app2:backend2 或 JSON 格式
     adk_backend_mapping_str: str = Field(default="", alias="ADK_BACKEND_MAPPING")
 
+    # ADK 后端地址模板（映射表找不到时使用）
+    # 格式: http://{app}.adk.internal:8080，{app} 会被替换为应用名
+    adk_backend_template: str = Field(default="", alias="ADK_BACKEND_TEMPLATE")
+
     # Middleware Server Configuration
     port: int = 8080
     log_level: str = "INFO"
@@ -103,13 +107,28 @@ class Settings(BaseSettings):
         """
         根据应用名获取对应的后端地址
 
+        优先级:
+        1. 映射表 ADK_BACKEND_MAPPING
+        2. 模板 ADK_BACKEND_TEMPLATE（替换 {app} 或 {app_name}）
+        3. 默认地址 ADK_HOST
+
         Args:
             app_name: ADK 应用名
 
         Returns:
-            后端地址，如果未配置映射则返回默认地址
+            后端地址
         """
-        return self.adk_backend_mapping.get(app_name, self.adk_host)
+        # 1. 优先从映射表查找
+        if app_name in self.adk_backend_mapping:
+            return self.adk_backend_mapping[app_name]
+
+        # 2. 使用模板生成
+        if self.adk_backend_template:
+            url = self.adk_backend_template.replace("{app}", app_name).replace("{app_name}", app_name)
+            return url
+
+        # 3. 使用默认地址
+        return self.adk_host
 
     class Config:
         env_file = ".env"
