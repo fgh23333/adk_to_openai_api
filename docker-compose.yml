@@ -1,4 +1,6 @@
-version: '3.8'
+# ========================================
+# Docker Compose 配置 - ADK Middleware + Traefik
+# ========================================
 
 services:
   adk-middleware:
@@ -6,29 +8,99 @@ services:
       context: .
       dockerfile: Dockerfile
     image: adk-middleware:latest
-    container_name: adk-middleware
+    container_name: ${CONTAINER_NAME:-adk-middleware}
+    restart: unless-stopped
+
+    # 端口映射（直连兜底）
     ports:
-      - "${PORT:-8080}:8080"
+      - "${HOST_PORT:-8000}:8000"
+
     environment:
-      - ADK_HOST=${ADK_HOST:-http://host.docker.internal:8000}
-      - ADK_APP_NAME=${ADK_APP_NAME:-agent}
-      - PORT=8080
+      # 基础配置
+      - PORT=8000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TZ=Asia/Shanghai
+
+      # ADK 后端配置
+      - ADK_BACKEND_URL=${ADK_BACKEND_URL:-http://host.docker.internal:8000}
+      - ADK_APP_NAME=${ADK_APP_NAME:-agent}
+      - ADK_TIMEOUT=${ADK_TIMEOUT:-120000}
+      - ADK_CONNECT_TIMEOUT=${ADK_CONNECT_TIMEOUT:-30000}
+
+      # 认证配置
+      - ENABLE_API_KEY_AUTH=${ENABLE_API_KEY_AUTH:-false}
+      - API_KEY=${API_KEY:-}
+
+      # 会话历史
+      - SESSION_HISTORY_ENABLED=${SESSION_HISTORY_ENABLED:-true}
+      - DATABASE_PATH=/app/data/sessions.db
+      - SESSION_RETENTION_DAYS=${SESSION_RETENTION_DAYS:-30}
+
+      # 多模态配置
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-20}
-      - DOWNLOAD_TIMEOUT=${DOWNLOAD_TIMEOUT:-30}
-      - REQUIRE_API_KEY=${REQUIRE_API_KEY:-false}
-      - API_KEYS=${API_KEYS:-}
+      - ALLOWED_MIME_TYPES=${ALLOWED_MIME_TYPES:-image/*,audio/*,video/*,application/pdf}
+      - FILE_DOWNLOAD_TIMEOUT=${FILE_DOWNLOAD_TIMEOUT:-60}
+      - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-10}
+
+      # 监控配置
+      - ENABLE_METRICS=${ENABLE_METRICS:-true}
+      - METRICS_RETENTION_HOURS=${METRICS_RETENTION_HOURS:-24}
+
+      # CORS 配置
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+
+    # 数据卷挂载
+    volumes:
+      - "${HOST_DATA_PATH:-./data}:/app/data"
+
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: unless-stopped
+
+    # 健康检查
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
+    # 网络配置
+    networks:
+      - default
+      - web_gateway
+
+    # Traefik 标签
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web_gateway"
+
+      # 路由器配置
+      - "traefik.http.routers.${CONTAINER_NAME:-adk-middleware}.rule=PathPrefix(`${URL_PREFIX:-/adk}`)"
+      - "traefik.http.routers.${CONTAINER_NAME:-adk-middleware}.entrypoints=web"
+      - "traefik.http.routers.${CONTAINER_NAME:-adk-middleware}.service=${CONTAINER_NAME:-adk-middleware}"
+
+      # 服务配置
+      - "traefik.http.services.${CONTAINER_NAME:-adk-middleware}.loadbalancer.server.port=8000"
+      - "traefik.http.services.${CONTAINER_NAME:-adk-middleware}.loadbalancer.healthcheck.path=/v1/health"
+      - "traefik.http.services.${CONTAINER_NAME:-adk-middleware}.loadbalancer.healthcheck.interval=10s"
+
+      # 中间件：去除前缀
+      - "traefik.http.middlewares.${CONTAINER_NAME:-adk-middleware}-strip.stripprefix.prefixes=${URL_PREFIX:-/adk}"
+
+      # 中间件：CORS
+      - "traefik.http.middlewares.${CONTAINER_NAME:-adk-middleware}-cors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,PATCH,OPTIONS"
+      - "traefik.http.middlewares.${CONTAINER_NAME:-adk-middleware}-cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.${CONTAINER_NAME:-adk-middleware}-cors.headers.accesscontrolalloworiginlist=*"
+
+      # 中间件：压缩
+      - "traefik.http.middlewares.${CONTAINER_NAME:-adk-middleware}-compress.compress=true"
+
+      # 应用中间件
+      - "traefik.http.routers.${CONTAINER_NAME:-adk-middleware}.middlewares=${CONTAINER_NAME:-adk-middleware}-strip,${CONTAINER_NAME:-adk-middleware}-cors,${CONTAINER_NAME:-adk-middleware}-compress"
+
 networks:
   default:
     name: adk-network
     driver: bridge
+  web_gateway:
+    external: true

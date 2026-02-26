@@ -64,7 +64,7 @@ stages:
         docker network ls | grep web_gateway || docker network create web_gateway
 
         # 启动容器
-        docker compose -f docker-compose.internal.yml -p $CONTAINER_NAME up -d --build --force-recreate
+        docker compose -p $CONTAINER_NAME up -d --build --force-recreate
 
         # 健康检查（等待容器启动完成）
         echo '等待服务启动...'
