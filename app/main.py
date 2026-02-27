@@ -15,6 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Dict, Any, Optional, Annotated, List
 
 from app.config import settings
+from app.api_key_manager import get_api_key_manager
 from app.models import (
     ChatCompletionRequest, ChatCompletionResponse, ListModelsResponse,
     HealthResponse, ErrorResponse
@@ -1080,6 +1081,128 @@ async def cleanup_history(
         "older_than_days": days
     }
 
+
+# ============ API Key 管理接口 ============
+
+@app.post("/v1/admin/api-keys")
+async def add_api_key(
+    request: Request,
+    api_key: str,
+    metadata: dict = None,
+    api_key_valid: str = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    动态添加 API Key（管理员接口）
+
+    Args:
+        api_key: 要添加的 API key
+        metadata: 可选的元数据（如用户名、描述等）
+
+    Returns:
+        操作结果
+    """
+    manager = get_api_key_manager()
+    success = manager.add_key(api_key, metadata)
+
+    return {
+        "success": success,
+        "message": "API key added successfully" if success else "API key already exists",
+        "key_prefix": api_key[:10] + "..."
+    }
+
+
+@app.delete("/v1/admin/api-keys/{api_key}")
+async def remove_api_key(
+    api_key: str,
+    api_key_valid: str = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    删除 API Key（管理员接口）
+
+    Args:
+        api_key: 要删除的 API key（URL 编码）
+
+    Returns:
+        操作结果
+    """
+    manager = get_api_key_manager()
+    success = manager.remove_key(api_key)
+
+    return {
+        "success": success,
+        "message": "API key removed successfully" if success else "API key not found"
+    }
+
+
+@app.get("/v1/admin/api-keys")
+async def list_api_keys(
+    include_value: bool = False,
+    api_key_valid: str = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    列出所有 API Keys（管理员接口）
+
+    Args:
+        include_value: 是否返回完整的 key 值（默认只返回前缀）
+
+    Returns:
+        API key 列表
+    """
+    manager = get_api_key_manager()
+    keys = manager.list_keys(include_value=include_value)
+
+    return {
+        "count": len(keys),
+        "keys": keys
+    }
+
+
+@app.post("/v1/admin/api-keys/reload")
+async def reload_api_keys(
+    api_key_valid: str = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    从环境变量重新加载 API Keys（管理员接口）
+
+    Returns:
+        操作结果
+    """
+    manager = get_api_key_manager()
+    manager.reload_from_env()
+
+    keys = manager.list_keys(include_value=False)
+
+    return {
+        "success": True,
+        "message": "API keys reloaded from environment",
+        "count": len(keys)
+    }
+
+
+@app.post("/v1/admin/api-keys/export")
+async def export_api_keys(
+    filepath: str = "data/api_keys_backup.json",
+    api_key_valid: str = Depends(verify_api_key_dependency)
+) -> dict:
+    """
+    导出 API Keys 到文件（管理员接口）
+
+    Args:
+        filepath: 导出文件路径
+
+    Returns:
+        操作结果
+    """
+    manager = get_api_key_manager()
+    success = manager.export_to_file(filepath)
+
+    return {
+        "success": success,
+        "message": f"API keys exported to {filepath}" if success else "Export failed"
+    }
+
+
+# ============ 文件上传接口 ============
 
 @app.post("/upload")
 async def upload_file(

@@ -2,6 +2,7 @@ from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, Union
 from app.config import settings
+from app.api_key_manager import get_api_key_manager
 import logging
 import hashlib
 
@@ -14,7 +15,7 @@ security = HTTPBearer(auto_error=False)
 class APIKeyAuth:
     def __init__(self):
         self.require_api_key = settings.require_api_key
-        self.api_keys = settings.api_keys if settings.api_keys else [settings.default_api_key]
+        self.api_key_manager = get_api_key_manager()
 
     async def verify_api_key(self, credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> Union[bool, str]:
         """
@@ -52,8 +53,8 @@ class APIKeyAuth:
         # Extract API key from Bearer token
         api_key = credentials.credentials
 
-        # Validate API key
-        if api_key not in self.api_keys:
+        # Validate API key using dynamic manager
+        if not self.api_key_manager.has_key(api_key):
             logger.warning(f"Invalid API key provided: {api_key[:10]}...")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
