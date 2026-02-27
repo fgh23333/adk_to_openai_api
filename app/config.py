@@ -29,8 +29,18 @@ class Settings(BaseSettings):
     max_concurrent_downloads: int = 10
 
     # API Key Configuration
+    require_api_key: bool = False  # 兼容旧代码
     enable_api_key_auth: bool = False
+    api_keys_str: str = Field(default="", alias="API_KEYS")
+    default_api_key: str = "sk-adk-middleware-key"
     api_key: str = ""
+
+    @property
+    def api_keys(self) -> List[str]:
+        """解析 API_KEYS 字符串为列表"""
+        if self.api_keys_str:
+            return [key.strip() for key in self.api_keys_str.split(",") if key.strip()]
+        return [self.default_api_key]
 
     # Database Configuration
     database_path: str = "data/sessions.db"
