@@ -23,35 +23,23 @@ def set_request_id(request_id: str):
 
 class Settings(BaseSettings):
     # ADK Backend Configuration
-    # 必填：后端应用映射（应用名:后端地址）
     adk_backend_mapping_str: str = Field(default="", alias="ADK_BACKEND_MAPPING")
     adk_timeout: int = 120000
     adk_connect_timeout: int = 30000
 
-    # Middleware Server Configuration
+    # Server Configuration
     port: int = 8000
     log_level: str = "INFO"
 
-    # Docker/Deployment Configuration (for docker-compose)
-    container_name: str = "adk-middleware"
-    host_port: int = 8000
-    host_data_path: str = "./data"
-    url_prefix: str = "/adk"
-    project_name: str = "adk-middleware"
-
     # File Processing Limits
     max_file_size_mb: int = 20
-    download_timeout: int = 30  # 兼容旧代码
-    allowed_mime_types: str = "image/*,audio/*,video/*,application/pdf"
     file_download_timeout: int = 60
     max_concurrent_downloads: int = 10
 
     # API Key Configuration
-    require_api_key: bool = False  # 兼容旧代码
     enable_api_key_auth: bool = False
     api_keys_str: str = Field(default="", alias="API_KEYS")
     default_api_key: str = "sk-adk-middleware-key"
-    api_key: str = ""
 
     @property
     def api_keys(self) -> List[str]:
@@ -80,8 +68,6 @@ class Settings(BaseSettings):
         支持两种格式:
         1. 简单格式: app1:http://backend1,app2:http://backend2
         2. JSON 格式: {"app1": "http://backend1", "app2": "http://backend2"}
-
-        必须配置，否则无法正常工作
         """
         if not self.adk_backend_mapping_str:
             return {}
