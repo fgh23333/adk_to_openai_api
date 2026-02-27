@@ -786,12 +786,6 @@ class ADKClient:
             result["status"] = "degraded"
 
         return result
-        except Exception as e:
-            result["adk_backend"] = "error"
-            result["details"]["error"] = str(e)
-
-        result["healthy"] = result["adk_backend"] == "healthy"
-        return result
 
     async def delete_session(self, app_name: str, user_id: str, session_id: str) -> dict:
         """

@@ -307,12 +307,6 @@ async def list_models(
     return await adk_client.list_models(request_model=query_model)
 
 
-@router.get("/v1/health")
-async def health_check() -> dict:
-    """Basic health check endpoint."""
-    return {"status": "ok"}
-
-
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
