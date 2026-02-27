@@ -73,12 +73,16 @@ class APIKeyAuth:
         return api_key
 
     @staticmethod
-    def get_session_id_from_api_key(api_key: str) -> str:
+    def get_session_id_from_api_key(api_key: Optional[str]) -> str:
         """
         从 API key 生成用户标识符
 
         直接使用 API key 的 hash 作为用户 ID，确保不同 API key 的用户完全隔离
+        当 api_key 为 None 时（未启用认证），返回默认用户 ID
         """
+        if not api_key:
+            # 未启用认证时，返回默认用户 ID
+            return "user_default"
         # 使用 API key 的 MD5 hash 作为用户 ID
         key_hash = hashlib.md5(api_key.encode()).hexdigest()[:16]
         return f"user_{key_hash}"
