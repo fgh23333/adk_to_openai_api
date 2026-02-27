@@ -18,7 +18,8 @@
       "Bash(git remote:*)",
       "Bash(git push:*)",
       "Bash(D:/Programs/Python/adk_to_openai_api/.env.example:*)",
-      "Bash(git mv:*)"
+      "Bash(git mv:*)",
+      "Bash(grep:*)"
     ]
   }
 }

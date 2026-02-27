@@ -1,9 +1,21 @@
 import re
 import base64
 import mimetypes
-import magic
 import io
 import csv
+from typing import List, Optional, Tuple, Union
+import httpx
+from app.core.config import settings
+from app.schemas.models import ContentPart, ADKPart, ADKInlineData
+import logging
+
+# Cross-platform magic import
+try:
+    import magic
+except ImportError:
+    magic = None
+
+logger = logging.getLogger(__name__)
 from typing import List, Optional, Tuple, Union
 import httpx
 from app.core.config import settings
@@ -293,7 +305,11 @@ class MultimodalProcessor:
 
             # Detect MIME type
             if not mime_type:
-                mime_type = magic.from_buffer(file_data, mime=True)
+                if magic:
+                    mime_type = magic.from_buffer(file_data, mime=True)
+                else:
+                    # Fallback to mimetypes if libmagic is not available
+                    mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
 
             # Get all supported types
             all_supported_types = []
