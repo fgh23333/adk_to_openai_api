@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     # File Processing Limits
     max_file_size_mb: int = 20
+    download_timeout: int = 30  # 兼容旧代码
     allowed_mime_types: str = "image/*,audio/*,video/*,application/pdf"
     file_download_timeout: int = 60
     max_concurrent_downloads: int = 10
