@@ -108,7 +108,7 @@ deploy_production:
     CODE_PATH: "/home/projects/adk_middleware_prod"       # 【TODO】代码存放路径
     DATA_PATH: "/home/projects/adk_middleware_data/prod"  # 【TODO】数据存储路径
     # 【TODO】生产环境 ADK 后端映射（应用名:地址）
-    ADK_BACKEND_MAPPING: "default:http://adk-backend-prod.internal.local:8080"
+    ADK_BACKEND_MAPPING: "data-analysis:http://172.31.243.14:8000"
   only:
     - master
 
