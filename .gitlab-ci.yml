@@ -33,7 +33,7 @@ stages:
         # 内网 ADK 后端配置
         export ADK_BACKEND_MAPPING=\"$ADK_BACKEND_MAPPING\"
         export ADK_APP_NAME=\"${ADK_APP_NAME:-default}\"
-        export ENABLE_API_KEY_AUTH=\"${ENABLE_API_KEY_AUTH:-true}\"
+        export ENABLE_API_KEY_AUTH=\"${ENABLE_API_KEY_AUTH:-false}\"
         export API_KEY=\"$API_KEY\"
 
         # 创建数据目录
