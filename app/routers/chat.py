@@ -59,6 +59,14 @@ def _generate_session_id_from_messages(messages: List, tenant_id: str) -> str:
     return f"{tenant_id}_{history_hash}"
 
 
+def _extract_app_name(model: str) -> str:
+    """从 model 字符串中提取 app_name"""
+    if "/" in model:
+        return model.split("/", 1)[0]
+    # 如果没有斜杠，返回整个 model（作为兼容）
+    return model
+
+
 @router.post("/v1/chat/completions")
 async def create_chat_completion(
     request: ChatCompletionRequest,
@@ -204,7 +212,7 @@ async def _stream_with_history(request: ChatCompletionRequest, req_metrics):
             db.save_message(
                 session_id=request.user,
                 user_id=request.user,
-                app_name=settings.adk_app_name,
+                app_name=_extract_app_name(request.model),
                 role="user",
                 content=user_content,
                 request_id=request_id
@@ -213,7 +221,7 @@ async def _stream_with_history(request: ChatCompletionRequest, req_metrics):
             db.save_message(
                 session_id=request.user,
                 user_id=request.user,
-                app_name=settings.adk_app_name,
+                app_name=_extract_app_name(request.model),
                 role="assistant",
                 content=full_content,
                 request_id=request_id,
@@ -264,7 +272,7 @@ def _save_message_to_history(session_id, user_id, request, response, latency_ms)
         db.save_message(
             session_id=session_id,
             user_id=user_id,
-            app_name=settings.adk_app_name,
+            app_name=_extract_app_name(request.model),
             role="user",
             content=user_content[:10000],
             request_id=request_id
@@ -278,7 +286,7 @@ def _save_message_to_history(session_id, user_id, request, response, latency_ms)
         db.save_message(
             session_id=session_id,
             user_id=user_id,
-            app_name=settings.adk_app_name,
+            app_name=_extract_app_name(request.model),
             role="assistant",
             content=assistant_content[:10000],
             request_id=request_id,
