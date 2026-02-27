@@ -6,7 +6,7 @@
 from typing import List, Dict, Optional
 from datetime import datetime
 import threading
-from app.config import settings
+from app.core.config import settings
 import logging
 import json
 
