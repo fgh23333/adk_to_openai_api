@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.proxyheaders import ProxyHeadersMiddleware
 
 # 核心配置和工具
 from app.core.config import settings, get_request_id, set_request_id
@@ -26,6 +27,10 @@ from app.core.auth import auth, verify_api_key_dependency
 from app.core.metrics import get_metrics_collector
 from app.core.api_key_manager import get_api_key_manager
 from app.database.database import init_database
+import os
+
+# 获取 URL 前缀（用于 Traefik 反向代理）
+URL_PREFIX = os.getenv("URL_PREFIX", "")
 
 # 路由
 from app.routers import chat, admin
@@ -109,6 +114,7 @@ app = FastAPI(
 """,
     version="1.3.0",
     lifespan=lifespan,
+    root_path=URL_PREFIX,
     contact={
         "name": "ADK Middleware",
     },
@@ -117,6 +123,9 @@ app = FastAPI(
 # ========================================
 # 中间件配置
 # ========================================
+# 代理头中间件（处理 X-Forwarded-* 头）
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["*"])
+# CORS 中间件
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -124,6 +133,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# 请求追踪中间件
 app.add_middleware(RequestTrackingMiddleware)
 
 

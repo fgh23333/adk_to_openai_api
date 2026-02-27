@@ -19,6 +19,7 @@ services:
       - PORT=8000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=Asia/Shanghai
+      - URL_PREFIX=${URL_PREFIX:-}
 
       # ADK 后端配置
       - ADK_BACKEND_MAPPING=${ADK_BACKEND_MAPPING:-}
