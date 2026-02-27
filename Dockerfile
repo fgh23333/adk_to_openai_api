@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+FROM 172.31.238.10/qtp/base/python:3.12.11-slim-bullseye
+MAINTAINER "QTP"
 
 LABEL maintainer="ADK Middleware"
 LABEL description="OpenAI-compatible API middleware for Google ADK"
