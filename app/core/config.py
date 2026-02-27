@@ -132,10 +132,10 @@ class Settings(BaseSettings):
         根据应用名获取对应的后端地址
 
         Args:
-            app_name: ADK 应用名
+            app_name: 映射 key（如 data-analysis）
 
         Returns:
-            后端地址
+            backend_url
 
         Raises:
             ValueError: 如果应用未在映射中配置
