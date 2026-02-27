@@ -426,9 +426,11 @@ class ADKClient:
             parts=adk_parts
         )
 
-        # Create ADK request - appName 是应用名，不是 agent 名
+        # Create ADK request
+        # appName: 使用 agent_name（ADK 提供的真实名字，如 my_agent）
+        # app_name (mapping key) 只用于路由到正确的后端
         adk_request = ADKRunRequest(
-            appName=app_name,  # 使用解析出的应用名
+            appName=agent_name,  # 使用 ADK agent 名，不是 mapping key
             userId=user_id,
             sessionId=session_id,
             streaming=request.stream,
