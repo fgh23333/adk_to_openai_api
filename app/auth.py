@@ -73,10 +73,14 @@ class APIKeyAuth:
 
     @staticmethod
     def get_session_id_from_api_key(api_key: str) -> str:
-        """Generate a stable session ID from API key."""
-        # Use hash to create a stable session ID
-        key_hash = hashlib.md5(api_key.encode()).hexdigest()[:12]
-        return f"session_{key_hash}"
+        """
+        从 API key 生成用户标识符
+
+        直接使用 API key 的 hash 作为用户 ID，确保不同 API key 的用户完全隔离
+        """
+        # 使用 API key 的 MD5 hash 作为用户 ID
+        key_hash = hashlib.md5(api_key.encode()).hexdigest()[:16]
+        return f"user_{key_hash}"
 
 
 # Create global auth instance
