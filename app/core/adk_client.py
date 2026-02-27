@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 
 class ADKClient:
     def __init__(self):
-        self.adk_host = settings.adk_host  # 默认后端地址
-        self.default_app_name = settings.adk_app_name
         self.multimodal_processor = MultimodalProcessor()
         self._session_cache = set()  # Simple cache for created sessions
         self._content_cache = {}  # Cache to track sent content for deduplication
@@ -293,19 +291,17 @@ class ADKClient:
         }
         return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-    async def list_apps(self, backend_url: str = None) -> list:
+    async def list_apps(self, backend_url: str) -> list:
         """
         从 ADK 后端获取应用列表
 
         Args:
-            backend_url: 指定的后端地址，默认使用 adk_host
+            backend_url: 后端地址
 
         Returns:
             应用列表，格式: [{"name": "app1", "agents": ["agent1", ...]}, ...]
+            如果后端不可达，返回空列表
         """
-        if backend_url is None:
-            backend_url = self.adk_host
-
         try:
             client = await self._get_client()
             response = await client.get(f"{backend_url}/list-apps")
@@ -314,14 +310,14 @@ class ADKClient:
             logger.info(f"Got apps list from {backend_url}/list-apps: {data}")
             return data
         except Exception as e:
-            logger.error(f"Failed to get apps list: {e}")
+            logger.warning(f"Failed to get apps list from {backend_url}: {e}")
             return []
 
     async def list_models(self, request_model: str = None) -> ListModelsResponse:
         """
         List available models (ADK agents).
 
-        动态从后端获取应用列表，并拼接成 app_name/agent_name 格式
+        仅从可访问的后端获取模型列表。如果后端不可达，不返回该后端的模型。
 
         Args:
             request_model: 请求中的 model 字段（可选），用于确定从哪个后端获取
@@ -329,25 +325,16 @@ class ADKClient:
         models = []
         seen_models = set()  # 去重
 
-        # 收集所有需要查询的后端地址
+        # 确定要查询的后端
         backends_to_query = {}
 
-        # 添加默认后端
-        backends_to_query["default"] = self.adk_host
-
-        # 添加所有映射的后端
-        for app_name, backend_url in settings.adk_backend_mapping.items():
-            if app_name not in backends_to_query:
-                backends_to_query[app_name] = backend_url
-
-        # 如果有指定 model，优先从对应后端获取
         if request_model and "/" in request_model:
+            # 如果指定了 model，只查询对应的后端
             app_name, _ = settings.parse_model(request_model)
-            if app_name in backends_to_query:
-                backends_to_query = {app_name: backends_to_query[app_name]}
-        elif request_model:
-            # 只有 agent 名，使用默认应用
-            backends_to_query = {"default": self.get_backend_url(settings.adk_app_name)}
+            backends_to_query[app_name] = self.get_backend_url(app_name)
+        else:
+            # 否则，查询所有配置的后端
+            backends_to_query = settings.adk_backend_mapping.copy()
 
         # 从每个后端获取模型
         for app_name, backend_url in backends_to_query.items():
@@ -381,34 +368,18 @@ class ADKClient:
                 logger.warning(f"Failed to get models from {backend_url}: {e}")
                 # 继续尝试其他后端
 
-        # 如果没有获取到任何模型，返回基于映射配置的默认模型
-        if not models:
-            # 如果配置了后端映射，使用映射中的应用名
-            if settings.adk_backend_mapping:
-                for app_name in settings.adk_backend_mapping.keys():
-                    model_id = settings.format_model(app_name, "agent")
-                    if model_id not in seen_models:
-                        seen_models.add(model_id)
-                        models.append(ModelInfo(
-                            id=model_id,
-                            created=int(time.time()),
-                            owned_by=app_name
-                        ))
-            else:
-                # 使用默认应用
-                default_model = settings.format_model(settings.adk_app_name, "agent")
-                models.append(ModelInfo(
-                    id=default_model,
-                    created=int(time.time()),
-                    owned_by="adk"
-                ))
-
         return ListModelsResponse(data=models)
     
     async def _convert_to_adk_request(self, request: ChatCompletionRequest) -> ADKRunRequest:
         """Convert OpenAI request to ADK request format."""
         # 解析 model 字段，提取 app_name 和 agent_name
-        app_name, agent_name = settings.parse_model(request.model or self.default_app_name)
+        if not request.model:
+            raise ValueError(
+                "Model is required. Must use 'app_name/agent_name' format. "
+                f"Available apps: {list(settings.adk_backend_mapping.keys())}"
+            )
+
+        app_name, agent_name = settings.parse_model(request.model)
         logger.info(f"Parsed model: app={app_name}, agent={agent_name}")
 
         # Extract the last user message (ADK is stateful)
@@ -458,7 +429,7 @@ class ADKClient:
         )
 
         # 存储原始 model 字符串用于响应
-        adk_request._original_model = request.model or self.default_app_name
+        adk_request._original_model = request.model
         adk_request._app_name = app_name
         adk_request._agent_name = agent_name
 
@@ -754,38 +725,67 @@ class ADKClient:
 
     async def check_health(self) -> dict:
         """
-        Check health status of ADK backend connection.
-        Uses separate client with short timeout for health checks.
-        Returns dict with status and details.
+        Check health status of all configured ADK backends.
+
+        Returns dict with overall status and per-backend details.
         """
+        backends = settings.adk_backend_mapping
+
+        if not backends:
+            return {
+                "middleware": "healthy",
+                "status": "error",
+                "error": "No backends configured in ADK_BACKEND_MAPPING",
+                "backends": {}
+            }
+
         result = {
             "middleware": "healthy",
-            "adk_backend": "unknown",
-            "adk_host": self.adk_host,
-            "details": {}
+            "status": "healthy",
+            "backends": {}
         }
 
-        try:
-            # Use separate client with short timeout for health checks
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                start_time = time.time()
-                response = await client.get(f"{self.adk_host}/")
-                latency = (time.time() - start_time) * 1000  # ms
+        all_healthy = True
 
-                if response.status_code < 500:
-                    result["adk_backend"] = "healthy"
-                    result["details"]["latency_ms"] = round(latency, 2)
-                    result["details"]["status_code"] = response.status_code
-                else:
-                    result["adk_backend"] = "unhealthy"
-                    result["details"]["error"] = f"HTTP {response.status_code}"
+        for app_name, backend_url in backends.items():
+            backend_result = {
+                "url": backend_url,
+                "status": "unknown"
+            }
 
-        except httpx.TimeoutException:
-            result["adk_backend"] = "timeout"
-            result["details"]["error"] = "Connection timeout"
-        except httpx.ConnectError as e:
-            result["adk_backend"] = "unreachable"
-            result["details"]["error"] = str(e)
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    start_time = time.time()
+                    response = await client.get(f"{backend_url}/")
+                    latency = (time.time() - start_time) * 1000
+
+                    if response.status_code < 500:
+                        backend_result["status"] = "healthy"
+                        backend_result["latency_ms"] = round(latency, 2)
+                    else:
+                        backend_result["status"] = "unhealthy"
+                        backend_result["error"] = f"HTTP {response.status_code}"
+                        all_healthy = False
+
+            except httpx.TimeoutException:
+                backend_result["status"] = "timeout"
+                backend_result["error"] = "Connection timeout"
+                all_healthy = False
+            except httpx.ConnectError as e:
+                backend_result["status"] = "unreachable"
+                backend_result["error"] = str(e)
+                all_healthy = False
+            except Exception as e:
+                backend_result["status"] = "error"
+                backend_result["error"] = str(e)
+                all_healthy = False
+
+            result["backends"][app_name] = backend_result
+
+        if not all_healthy:
+            result["status"] = "degraded"
+
+        return result
         except Exception as e:
             result["adk_backend"] = "error"
             result["details"]["error"] = str(e)

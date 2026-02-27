@@ -23,8 +23,7 @@ def set_request_id(request_id: str):
 
 class Settings(BaseSettings):
     # ADK Backend Configuration
-    adk_host: str = "http://localhost:8000"  # 默认后端地址
-    adk_app_name: str = "agent"  # 默认应用名
+    # 必填：后端应用映射（应用名:后端地址）
     adk_backend_mapping_str: str = Field(default="", alias="ADK_BACKEND_MAPPING")
     adk_timeout: int = 120000
     adk_connect_timeout: int = 30000
@@ -81,6 +80,8 @@ class Settings(BaseSettings):
         支持两种格式:
         1. 简单格式: app1:http://backend1,app2:http://backend2
         2. JSON 格式: {"app1": "http://backend1", "app2": "http://backend2"}
+
+        必须配置，否则无法正常工作
         """
         if not self.adk_backend_mapping_str:
             return {}
@@ -106,22 +107,26 @@ class Settings(BaseSettings):
         """
         解析 model 字符串，提取 app_name 和 agent_name
 
-        支持格式:
-        - app_name/agent_name (推荐，明确指定应用和agent)
-        - agent_name (使用默认应用)
+        必须使用 app_name/agent_name 格式
 
         Args:
-            model: model 字符串
+            model: model 字符串 (格式: app_name/agent_name)
 
         Returns:
             (app_name, agent_name) 元组
+
+        Raises:
+            ValueError: 如果 model 格式不正确
         """
-        if "/" in model:
-            # app_name/agent_name 格式
-            parts = model.split("/", 1)
-            return parts[0], parts[1]
-        # 只有 agent_name，使用默认应用
-        return self.adk_app_name, model
+        if "/" not in model:
+            raise ValueError(
+                f"Invalid model format '{model}'. "
+                f"Must use 'app_name/agent_name' format. "
+                f"Available apps: {list(self.adk_backend_mapping.keys())}"
+            )
+
+        parts = model.split("/", 1)
+        return parts[0], parts[1]
 
     def format_model(self, app_name: str, agent_name: str) -> str:
         """
@@ -144,9 +149,17 @@ class Settings(BaseSettings):
             app_name: ADK 应用名
 
         Returns:
-            后端地址，如果未配置映射则返回默认地址
+            后端地址
+
+        Raises:
+            ValueError: 如果应用未在映射中配置
         """
-        return self.adk_backend_mapping.get(app_name, self.adk_host)
+        if app_name not in self.adk_backend_mapping:
+            raise ValueError(
+                f"Application '{app_name}' not configured in ADK_BACKEND_MAPPING. "
+                f"Available apps: {list(self.adk_backend_mapping.keys())}"
+            )
+        return self.adk_backend_mapping[app_name]
 
     class Config:
         env_file = ".env"

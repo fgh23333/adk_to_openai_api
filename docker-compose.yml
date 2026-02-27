@@ -20,9 +20,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=Asia/Shanghai
 
-      # ADK 后端配置
-      - ADK_BACKEND_MAPPING=${ADK_BACKEND_MAPPING:-}
-      - ADK_APP_NAME=${ADK_APP_NAME:-agent}
+      # ADK 后端配置（必填）
+      - ADK_BACKEND_MAPPING=${ADK_BACKEND_MAPPING}
+
+      # 超时配置
       - ADK_TIMEOUT=${ADK_TIMEOUT:-120000}
       - ADK_CONNECT_TIMEOUT=${ADK_CONNECT_TIMEOUT:-30000}
 
@@ -34,12 +35,6 @@ services:
       - SESSION_HISTORY_ENABLED=${SESSION_HISTORY_ENABLED:-true}
       - DATABASE_PATH=/app/data/sessions.db
       - SESSION_RETENTION_DAYS=${SESSION_RETENTION_DAYS:-30}
-
-      # 多模态配置
-      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-20}
-      - ALLOWED_MIME_TYPES=${ALLOWED_MIME_TYPES:-image/*,audio/*,video/*,application/pdf}
-      - FILE_DOWNLOAD_TIMEOUT=${FILE_DOWNLOAD_TIMEOUT:-60}
-      - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-10}
 
       # 监控配置
       - ENABLE_METRICS=${ENABLE_METRICS:-true}

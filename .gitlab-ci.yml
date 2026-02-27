@@ -1,11 +1,10 @@
 # ========================================
 # GitLab CI 配置 - ADK Middleware 内网部署
 # ========================================
-# 使用说明：标记为 【TODO】 的地方需要根据实际项目修改
 
 variables:
-  PROJECT_NAME: "adk-middleware"  # 【TODO】项目名称
-  REPO_URL: "ssh://git@gitlab.flashhold.com:10022/drl/mcp/adk_to_openai_api.git"  # 【TODO】Git仓库地址
+  PROJECT_NAME: "adk-middleware"
+  REPO_URL: "ssh://git@gitlab.flashhold.com:10022/drl/mcp/adk_to_openai_api.git"
 
 stages:
   - deploy
@@ -22,7 +21,7 @@ stages:
   script:
     - |
       sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "
-        # 环境变量（从CI传入，使用双引号让变量在本地展开）
+        # 环境变量（从CI传入）
         export HOST_PORT=\"$DEPLOY_PORT\"
         export HOST_DATA_PATH=\"$DATA_PATH\"
         export CONTAINER_NAME=\"$CONTAINER_NAME\"
@@ -30,9 +29,12 @@ stages:
         export PROJECT_NAME=\"$PROJECT_NAME\"
         export SSH_HOST=\"$SSH_HOST\"
 
-        # 内网 ADK 后端配置
+        # ADK 后端配置（必填）
         export ADK_BACKEND_MAPPING=\"$ADK_BACKEND_MAPPING\"
-        export ADK_APP_NAME=\"${ADK_APP_NAME:-default}\"
+        export ADK_TIMEOUT=\"${ADK_TIMEOUT:-120000}\"
+        export ADK_CONNECT_TIMEOUT=\"${ADK_CONNECT_TIMEOUT:-30000}\"
+
+        # 认证配置
         export ENABLE_API_KEY_AUTH=\"${ENABLE_API_KEY_AUTH:-false}\"
         export API_KEY=\"$API_KEY\"
 
@@ -41,18 +43,14 @@ stages:
 
         # 拉取代码
         if [ ! -d $CODE_PATH ]; then
-          # 代码目录不存在，创建并克隆
           mkdir -p $CODE_PATH
           git clone --branch $CI_COMMIT_REF_NAME $REPO_URL $CODE_PATH
         else
-          # 目录已存在，进入目录
           cd $CODE_PATH
           if [ ! -d .git ]; then
-            # 目录存在但不是git仓库，报错退出
-            echo '错误: \$CODE_PATH 目录已存在且不是git仓库，请手动检查'
+            echo '错误: \$CODE_PATH 目录已存在且不是git仓库'
             exit 1
           fi
-          # 已有git仓库，拉取更新
           git fetch origin
           git checkout -B $CI_COMMIT_REF_NAME origin/$CI_COMMIT_REF_NAME
           git reset --hard origin/$CI_COMMIT_REF_NAME
@@ -66,7 +64,7 @@ stages:
         # 启动容器
         docker compose -p $CONTAINER_NAME up -d --build --force-recreate
 
-        # 健康检查（等待容器启动完成）
+        # 健康检查
         echo '等待服务启动...'
         sleep 10
         docker exec $CONTAINER_NAME curl -f http://localhost:8000/health || exit 1
@@ -74,8 +72,8 @@ stages:
         echo ''
         echo '================================================'
         echo '🚀 部署成功！'
-        echo '📖 API: http://$SSH_HOST:$DEPLOY_PORT$URL_PREFIX/v1/chat/completions'
-        echo '📖 Swagger: http://$SSH_HOST:$DEPLOY_PORT$URL_PREFIX/docs'
+        echo '📖 API: http://'$SSH_HOST:$DEPLOY_PORT$URL_PREFIX'/v1/chat/completions'
+        echo '📖 Swagger: http://'$SSH_HOST:$DEPLOY_PORT$URL_PREFIX'/docs'
         echo '💾 数据目录: $DATA_PATH'
         echo '================================================'
       "
@@ -86,13 +84,13 @@ stages:
 deploy_preview:
   <<: *deploy_logic
   variables:
-    DEPLOY_PORT: "9601"           # 【TODO】预览环境端口
-    URL_PREFIX: "/adk-dev"        # 【TODO】预览环境路由前缀
-    CONTAINER_NAME: "adk-middleware-dev" # 【TODO】预览环境容器名
-    CODE_PATH: "/home/projects/adk_middleware_dev"        # 【TODO】代码存放路径
-    DATA_PATH: "/home/projects/adk_middleware_data/dev"   # 【TODO】数据存储路径
-    # 【TODO】预览环境 ADK 后端映射（应用名:地址）
-    ADK_BACKEND_MAPPING: "default:http://adk-backend-dev.internal.local:8080"
+    DEPLOY_PORT: "9601"
+    URL_PREFIX: "/adk-dev"
+    CONTAINER_NAME: "adk-middleware-dev"
+    CODE_PATH: "/home/projects/adk_middleware_dev"
+    DATA_PATH: "/home/projects/adk_middleware_data/dev"
+    # 【必填】预览环境 ADK 后端映射（应用名:地址）
+    ADK_BACKEND_MAPPING: "data-analysis:http://172.31.243.14:8000"
   only:
     - internal-deploy
 
@@ -102,12 +100,12 @@ deploy_preview:
 deploy_production:
   <<: *deploy_logic
   variables:
-    DEPLOY_PORT: "9600"           # 【TODO】生产环境端口
-    URL_PREFIX: "/adk"            # 【TODO】生产环境路由前缀
-    CONTAINER_NAME: "adk-middleware-prod" # 【TODO】生产环境容器名
-    CODE_PATH: "/home/projects/adk_middleware_prod"       # 【TODO】代码存放路径
-    DATA_PATH: "/home/projects/adk_middleware_data/prod"  # 【TODO】数据存储路径
-    # 【TODO】生产环境 ADK 后端映射（应用名:地址）
+    DEPLOY_PORT: "9600"
+    URL_PREFIX: "/adk"
+    CONTAINER_NAME: "adk-middleware-prod"
+    CODE_PATH: "/home/projects/adk_middleware_prod"
+    DATA_PATH: "/home/projects/adk_middleware_data/prod"
+    # 【必填】生产环境 ADK 后端映射（应用名:地址）
     ADK_BACKEND_MAPPING: "data-analysis:http://172.31.243.14:8000"
   only:
     - master
@@ -116,12 +114,11 @@ deploy_production:
 # GitLab 变量配置（在 GitLab 项目设置中配置）
 # ========================================
 # 必填变量：
-# SSH_HOST      - 部署目标服务器 IP (如: 192.168.1.100)
-# SSH_USER      - SSH 登录用户名 (如: root)
-# SSH_PASSWORD  - SSH 登录密码（勾选 Masked）
+# ADK_BACKEND_MAPPING - ADK 后端映射（必填），格式: app1:http://xxx:8000,app2:http://yyy:8000
+# SSH_HOST            - 部署目标服务器 IP
+# SSH_USER            - SSH 登录用户名
+# SSH_PASSWORD        - SSH 登录密码（勾选 Masked）
 #
 # 可选变量：
-# API_KEY       - API 认证密钥 (如: sk-internal:xxxxx)
-# ADK_BACKEND_MAPPING - 多后端映射 (如: app1:http://adk-1:8080,app2:http://adk-2:8080)
-# ADK_APP_NAME  - 默认应用名 (默认: default)
-# ENABLE_API_KEY_AUTH - 是否启用API Key认证 (默认: true)
+# API_KEY             - API 认证密钥
+# ENABLE_API_KEY_AUTH - 是否启用API Key认证 (默认: false)
