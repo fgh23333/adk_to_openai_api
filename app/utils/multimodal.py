@@ -6,8 +6,8 @@ import io
 import csv
 from typing import List, Optional, Tuple, Union
 import httpx
-from app.config import settings
-from app.models import ContentPart, ADKPart, ADKInlineData
+from app.core.config import settings
+from app.schemas.models import ContentPart, ADKPart, ADKInlineData
 import logging
 
 logger = logging.getLogger(__name__)

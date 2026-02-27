@@ -1,8 +1,8 @@
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, Union
-from app.config import settings
-from app.api_key_manager import get_api_key_manager
+from app.core.config import settings
+from app.core.api_key_manager import get_api_key_manager
 import logging
 import hashlib
 

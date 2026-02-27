@@ -3,12 +3,12 @@ import time
 from typing import AsyncGenerator, Optional
 import httpx
 from contextlib import asynccontextmanager
-from app.config import settings
-from app.models import (
+from app.core.config import settings
+from app.schemas.models import (
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionResponseChoice,
     ChatMessage, ADKRunRequest, ADKMessage, ADKPart, ListModelsResponse, ModelInfo
 )
-from app.multimodal import MultimodalProcessor
+from app.utils.multimodal import MultimodalProcessor
 import logging
 
 logger = logging.getLogger(__name__)
