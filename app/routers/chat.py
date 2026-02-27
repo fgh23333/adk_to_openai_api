@@ -375,7 +375,7 @@ async def upload_file(
 @router.get("/")
 async def root() -> dict:
     """Root endpoint."""
-    from app.core.auth import get_request_id
+    from app.core.config import get_request_id
     return {
         "message": "ADK Middleware API is running",
         "version": "1.3.0",

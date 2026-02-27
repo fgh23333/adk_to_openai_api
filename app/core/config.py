@@ -1,6 +1,24 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import Optional, List, Dict
+from contextvars import ContextVar
+
+
+# Context variable for request ID
+request_id_var: ContextVar[str] = ContextVar('request_id', default='')
+
+
+def get_request_id() -> Optional[str]:
+    """Get the current request ID from context."""
+    try:
+        return request_id_var.get()
+    except LookupError:
+        return None
+
+
+def set_request_id(request_id: str):
+    """Set the request ID in context."""
+    request_id_var.set(request_id)
 
 
 class Settings(BaseSettings):

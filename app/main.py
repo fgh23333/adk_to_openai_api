@@ -21,10 +21,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # 核心配置和工具
-from app.core.config import settings
-from app.core.auth import auth, verify_api_key_dependency, get_request_id, set_request_id
+from app.core.config import settings, get_request_id, set_request_id
+from app.core.auth import auth, verify_api_key_dependency
 from app.core.metrics import get_metrics_collector
-from app.api_key_manager import get_api_key_manager
+from app.core.api_key_manager import get_api_key_manager
 from app.database.database import init_database
 
 # 路由
