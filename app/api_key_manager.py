@@ -174,7 +174,7 @@ class APIKeyManager:
                             "added_at": datetime.now().isoformat(),
                             "source": "file"
                         }
-                        count +=
+                        count += 1
                 logger.info(f"Loaded {count} API keys from {filepath}")
                 return count
         except Exception as e:
