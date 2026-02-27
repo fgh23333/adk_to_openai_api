@@ -14,7 +14,6 @@ security = HTTPBearer(auto_error=False)
 
 class APIKeyAuth:
     def __init__(self):
-        self.require_api_key = settings.require_api_key
         self.api_key_manager = get_api_key_manager()
 
     async def verify_api_key(self, credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> Union[bool, str]:
@@ -31,7 +30,7 @@ class APIKeyAuth:
             HTTPException: If API key is invalid or missing
         """
         # If API key verification is disabled, return default key
-        if not self.require_api_key:
+        if not settings.enable_api_key_auth:
             return settings.default_api_key
 
         # If no credentials provided
