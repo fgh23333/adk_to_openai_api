@@ -19,7 +19,6 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.middleware.proxyheaders import ProxyHeadersMiddleware
 
 # 核心配置和工具
 from app.core.config import settings, get_request_id, set_request_id
@@ -27,10 +26,6 @@ from app.core.auth import auth, verify_api_key_dependency
 from app.core.metrics import get_metrics_collector
 from app.core.api_key_manager import get_api_key_manager
 from app.database.database import init_database
-import os
-
-# 获取 URL 前缀（用于 Traefik 反向代理）
-URL_PREFIX = os.getenv("URL_PREFIX", "")
 
 # 路由
 from app.routers import chat, admin
@@ -39,6 +34,22 @@ logger = logging.getLogger(__name__)
 
 # Context variable for request ID
 request_id_var: ContextVar[str] = ContextVar('request_id', default='')
+
+
+# ========================================
+# RootPath 中间件（Traefik 兼容）
+# ========================================
+class RootPathMiddleware:
+    """动态处理 root_path，支持 Traefik 网关访问和直连访问"""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            prefix = headers.get(b"x-forwarded-prefix", b"").decode("utf-8")
+            scope["root_path"] = prefix.strip() if prefix else ""
+        await self.app(scope, receive, send)
 
 
 # ========================================
@@ -114,7 +125,6 @@ app = FastAPI(
 """,
     version="1.3.0",
     lifespan=lifespan,
-    root_path=URL_PREFIX,
     contact={
         "name": "ADK Middleware",
     },
@@ -123,9 +133,7 @@ app = FastAPI(
 # ========================================
 # 中间件配置
 # ========================================
-# 代理头中间件（处理 X-Forwarded-* 头）
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["*"])
-# CORS 中间件
+app.add_middleware(RootPathMiddleware)  # 必须第一个添加，处理 Traefik 前缀
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -133,7 +141,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# 请求追踪中间件
 app.add_middleware(RequestTrackingMiddleware)
 
 
@@ -267,6 +274,13 @@ app.include_router(admin.router)
 # ========================================
 # 健康检查和指标端点（放在最后作为默认路由）
 # ========================================
+@app.get("/health")
+async def health_check() -> dict:
+    """Basic health check for Docker and Traefik."""
+    return {"status": "healthy", "message": "OK"}
+
+
+@app.get("/v1/health/detailed")
 @app.get("/v1/health/detailed")
 async def health_check_detailed() -> dict:
     """Detailed health check including ADK backend status."""
