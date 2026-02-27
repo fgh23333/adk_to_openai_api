@@ -319,6 +319,9 @@ class ADKClient:
 
         仅从可访问的后端获取模型列表。如果后端不可达，不返回该后端的模型。
 
+        返回格式: {mapping_key}/{agent_name}
+        例如: data-analysis/my_agent, data-analysis/other_agent
+
         Args:
             request_model: 请求中的 model 字段（可选），用于确定从哪个后端获取
         """
@@ -337,32 +340,36 @@ class ADKClient:
             backends_to_query = settings.adk_backend_mapping.copy()
 
         # 从每个后端获取模型
-        for app_name, backend_url in backends_to_query.items():
+        for mapping_key, backend_url in backends_to_query.items():
             try:
                 apps_data = await self.list_apps(backend_url)
 
                 if isinstance(apps_data, list):
-                    for app in apps_data:
-                        if isinstance(app, dict):
-                            backend_app_name = app.get("name", app_name)
-                            agents = app.get("agents", ["agent"])
-                            for agent in agents:
-                                model_id = settings.format_model(backend_app_name, agent)
+                    # 处理返回的数据
+                    # 期望格式: [{"name": "my_agent"}, {"name": "other_agent"}]
+                    # 或者: ["my_agent", "other_agent"]
+                    for item in apps_data:
+                        if isinstance(item, dict):
+                            # 字典格式，提取 name 字段作为 agent_name
+                            agent_name = item.get("name", "")
+                            if agent_name:
+                                model_id = settings.format_model(mapping_key, agent_name)
                                 if model_id not in seen_models:
                                     seen_models.add(model_id)
                                     models.append(ModelInfo(
                                         id=model_id,
                                         created=int(time.time()),
-                                        owned_by=backend_app_name
+                                        owned_by=mapping_key
                                     ))
-                        elif isinstance(app, str):
-                            model_id = settings.format_model(app, "agent")
+                        elif isinstance(item, str):
+                            # 字符串格式，直接作为 agent_name
+                            model_id = settings.format_model(mapping_key, item)
                             if model_id not in seen_models:
                                 seen_models.add(model_id)
                                 models.append(ModelInfo(
                                     id=model_id,
                                     created=int(time.time()),
-                                    owned_by=app
+                                    owned_by=mapping_key
                                 ))
             except Exception as e:
                 logger.warning(f"Failed to get models from {backend_url}: {e}")
