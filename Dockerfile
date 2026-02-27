@@ -11,8 +11,7 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PORT=8000
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Install system dependencies for python-magic
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,7 +39,7 @@ RUN mkdir -p data && chown -R app:app /app
 # Switch to non-root user
 USER app
 
-# Expose port
+# Expose port (container listens on 8000)
 EXPOSE 8000
 
 # Health check
