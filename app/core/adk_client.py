@@ -327,57 +327,81 @@ class ADKClient:
             request_model: 请求中的 model 字段（可选），用于确定从哪个后端获取
         """
         models = []
+        seen_models = set()  # 去重
 
-        # 如果有指定 model，解析出 app_name 并从对应后端获取
-        app_name = None
+        # 收集所有需要查询的后端地址
+        backends_to_query = {}
+
+        # 添加默认后端
+        backends_to_query["default"] = self.adk_host
+
+        # 添加所有映射的后端
+        for app_name, backend_url in settings.adk_backend_mapping.items():
+            if app_name not in backends_to_query:
+                backends_to_query[app_name] = backend_url
+
+        # 如果有指定 model，优先从对应后端获取
         if request_model and "/" in request_model:
             app_name, _ = settings.parse_model(request_model)
+            if app_name in backends_to_query:
+                backends_to_query = {app_name: backends_to_query[app_name]}
         elif request_model:
             # 只有 agent 名，使用默认应用
-            app_name = settings.adk_app_name
+            backends_to_query = {"default": self.get_backend_url(settings.adk_app_name)}
 
-        # 确定要查询的后端地址
-        if app_name:
-            backend_url = self.get_backend_url(app_name)
-        else:
-            # 没有指定应用，使用默认后端
-            backend_url = self.adk_host
+        # 从每个后端获取模型
+        for app_name, backend_url in backends_to_query.items():
+            try:
+                apps_data = await self.list_apps(backend_url)
 
-        # 如果配置了模板，尝试从模板后端获取应用列表
-        apps_data = await self.list_apps(backend_url)
+                if isinstance(apps_data, list):
+                    for app in apps_data:
+                        if isinstance(app, dict):
+                            backend_app_name = app.get("name", app_name)
+                            agents = app.get("agents", ["agent"])
+                            for agent in agents:
+                                model_id = settings.format_model(backend_app_name, agent)
+                                if model_id not in seen_models:
+                                    seen_models.add(model_id)
+                                    models.append(ModelInfo(
+                                        id=model_id,
+                                        created=int(time.time()),
+                                        owned_by=backend_app_name
+                                    ))
+                        elif isinstance(app, str):
+                            model_id = settings.format_model(app, "agent")
+                            if model_id not in seen_models:
+                                seen_models.add(model_id)
+                                models.append(ModelInfo(
+                                    id=model_id,
+                                    created=int(time.time()),
+                                    owned_by=app
+                                ))
+            except Exception as e:
+                logger.warning(f"Failed to get models from {backend_url}: {e}")
+                # 继续尝试其他后端
 
-        # 解析返回数据并拼接模型格式
-        # 假设返回格式: [{"name": "app1", "agents": ["agent1", "agent2"]}, ...]
-        # 或者: ["app1", "app2"] (没有 agent 信息，使用默认 agent)
-        if isinstance(apps_data, list):
-            for app in apps_data:
-                if isinstance(app, dict):
-                    app_name = app.get("name", "")
-                    agents = app.get("agents", ["agent"])  # 默认 agent
-                    for agent in agents:
-                        model_id = settings.format_model(app_name, agent)
+        # 如果没有获取到任何模型，返回基于映射配置的默认模型
+        if not models:
+            # 如果配置了后端映射，使用映射中的应用名
+            if settings.adk_backend_mapping:
+                for app_name in settings.adk_backend_mapping.keys():
+                    model_id = settings.format_model(app_name, "agent")
+                    if model_id not in seen_models:
+                        seen_models.add(model_id)
                         models.append(ModelInfo(
                             id=model_id,
                             created=int(time.time()),
                             owned_by=app_name
                         ))
-                elif isinstance(app, str):
-                    # 简单字符串列表，使用默认 agent
-                    model_id = settings.format_model(app, "agent")
-                    models.append(ModelInfo(
-                        id=model_id,
-                        created=int(time.time()),
-                        owned_by=app
-                    ))
-
-        # 如果没有获取到任何模型，返回默认模型
-        if not models:
-            default_model = request_model or settings.format_model(settings.adk_app_name, "agent")
-            models.append(ModelInfo(
-                id=default_model,
-                created=int(time.time()),
-                owned_by="adk"
-            ))
+            else:
+                # 使用默认应用
+                default_model = settings.format_model(settings.adk_app_name, "agent")
+                models.append(ModelInfo(
+                    id=default_model,
+                    created=int(time.time()),
+                    owned_by="adk"
+                ))
 
         return ListModelsResponse(data=models)
     
