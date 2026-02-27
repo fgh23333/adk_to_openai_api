@@ -7,34 +7,42 @@ class Settings(BaseSettings):
     # ADK Backend Configuration
     adk_host: str = "http://localhost:8000"  # 默认后端地址
     adk_app_name: str = "agent"  # 默认应用名
-
-    # ADK 后端地址映射表 (应用名 -> 后端地址)
-    # 格式: app1:backend1,app2:backend2 或 JSON 格式
     adk_backend_mapping_str: str = Field(default="", alias="ADK_BACKEND_MAPPING")
+    adk_timeout: int = 120000
+    adk_connect_timeout: int = 30000
 
     # Middleware Server Configuration
-    port: int = 8080
+    port: int = 8000
     log_level: str = "INFO"
+
+    # Docker/Deployment Configuration (for docker-compose)
+    container_name: str = "adk-middleware"
+    host_port: int = 8000
+    host_data_path: str = "./data"
+    url_prefix: str = "/adk"
+    project_name: str = "adk-middleware"
 
     # File Processing Limits
     max_file_size_mb: int = 20
-    download_timeout: int = 30
+    allowed_mime_types: str = "image/*,audio/*,video/*,application/pdf"
+    file_download_timeout: int = 60
+    max_concurrent_downloads: int = 10
 
     # API Key Configuration
-    require_api_key: bool = False
-    api_keys_str: str = Field(default="", alias="API_KEYS")
-    default_api_key: str = "sk-adk-middleware-key"
+    enable_api_key_auth: bool = False
+    api_key: str = ""
 
     # Database Configuration
     database_path: str = "data/sessions.db"
     session_history_enabled: bool = True
+    session_retention_days: int = 30
 
-    @property
-    def api_keys(self) -> List[str]:
-        """解析 API_KEYS 字符串为列表"""
-        if self.api_keys_str:
-            return [key.strip() for key in self.api_keys_str.split(",") if key.strip()]
-        return [self.default_api_key]
+    # Monitoring Configuration
+    enable_metrics: bool = True
+    metrics_retention_hours: int = 24
+
+    # CORS Configuration
+    allowed_origins: str = "*"
 
     @property
     def adk_backend_mapping(self) -> Dict[str, str]:
@@ -114,6 +122,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  # 忽略额外的环境变量
 
 
 settings = Settings()
