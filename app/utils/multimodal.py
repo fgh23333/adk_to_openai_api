@@ -203,7 +203,7 @@ class TextExtractor:
 class MultimodalProcessor:
     def __init__(self):
         self.max_file_size = settings.max_file_size_mb * 1024 * 1024  # Convert to bytes
-        self.timeout = settings.download_timeout
+        self.timeout = settings.file_download_timeout
         self.text_extractor = TextExtractor()
 
         # Gemini/ADK 支持的多模态文件类型 + 需要文本提取的文件类型
