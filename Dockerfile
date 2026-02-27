@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root user for security (before copying files)
+RUN useradd --create-home --shell /bin/bash app
+
 # Copy requirements first for better caching
 COPY requirements.txt .
 
@@ -31,12 +34,10 @@ COPY app ./app
 COPY main.py .
 COPY README.md .
 
-# Create data directory
+# Create data directory and set ownership
 RUN mkdir -p data && chown -R app:app /app
 
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
+# Switch to non-root user
 USER app
 
 # Expose port
