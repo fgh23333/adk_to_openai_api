@@ -18,7 +18,7 @@
 ### 多模态支持
 
 | 类型 | 支持格式 | 处理方式 |
-|------|----------|----------|
+| ------ | ---------- | ---------- |
 | **图片** | JPEG, PNG, GIF, WebP | 直接传递 |
 | **视频** | MP4, MPEG, MOV, AVI, FLV, WebM, 3GP | 直接传递 |
 | **音频** | MP3, WAV, FLAC, OGG, AAC, M4A, WebM | 直接传递 |
@@ -28,7 +28,7 @@
 
 ## 架构
 
-```
+```bash
 ┌─────────────────┐    OpenAI API    ┌─────────────────┐    ADK SSE     ┌─────────────────┐
 │                 │     Format       │                 │     Stream     │                 │
 │  ChatBox/Dify   │  ─────────────>  │   Middleware    │  ────────────> │   ADK Backend   │
@@ -68,18 +68,16 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 配置
+### 环境配置
 
 创建 `.env` 文件：
 
 ```bash
-# ADK 后端配置
-ADK_HOST=http://localhost:8000
-ADK_APP_NAME=agent
-
-# 多应用后端映射（可选）
-# 格式：app1:url1,app2:url2 或 JSON 格式
-ADK_BACKEND_MAPPING=app1:http://backend1:8000,app2:http://backend2:8000
+# ADK 后端配置（必需）
+# 格式：mapping_key1:url1,mapping_key2:url2
+# mapping_key: 用于路由的标识符
+# url: ADK 后端地址
+ADK_BACKEND_MAPPING=data-analysis:http://localhost:8000
 
 # 服务配置
 PORT=8080
@@ -98,6 +96,12 @@ SESSION_HISTORY_ENABLED=true
 DATABASE_PATH=data/sessions.db
 ```
 
+**重要说明**：
+
+- `ADK_BACKEND_MAPPING` 是必需的配置项
+- `mapping_key` 是你自定义的路由标识（如 `data-analysis`）
+- `agent_name`（模型名后半部分）从 ADK 后端的 `/list-apps` 接口获取
+
 ### 启动
 
 ```bash
@@ -110,52 +114,49 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 4
 
 ## 多应用支持
 
-### 配置多应用后端
+### 配置说明
 
 支持将不同的 ADK 应用路由到不同的后端服务器：
 
 ```bash
 # 简单格式
-ADK_BACKEND_MAPPING=app1:http://backend1:8000,app2:http://backend2:8000
+ADK_BACKEND_MAPPING=data-analysis:http://backend1:8000,chatbot:http://backend2:8000
 
 # JSON 格式
-ADK_BACKEND_MAPPING='{"app1": "http://backend1:8000", "app2": "http://backend2:8000"}'
+ADK_BACKEND_MAPPING='{"data-analysis": "http://backend1:8000", "chatbot": "http://backend2:8000"}'
 ```
 
 ### 模型格式
 
-调用时使用 `app_name/agent_name` 格式：
+**model 字段必须使用 `mapping_key/agent_name` 格式**：
 
 ```json
 {
-  "model": "app1/agent_name",
-  "messages": [{"role": "user", "content": "你好"}]
+  "model": "data-analysis/my_agent",
+  "messages": [{"role": "user", "content": "分析一下数据"}]
 }
 ```
 
-如果只使用默认应用，可以只写 agent 名称：
+**说明**：
 
-```json
-{
-  "model": "agent_name",
-  "messages": [{"role": "user", "content": "你好"}]
-}
-```
+- `mapping_key`（如 `data-analysis`）：配置在 `ADK_BACKEND_MAPPING` 中的路由标识，用于找到对应的后端服务器
+- `agent_name`（如 `my_agent`）：从 ADK 后端 `/list-apps` 接口获取的实际应用名
 
-### 动态获取应用列表
+### 动态获取模型列表
 
 ```bash
 curl http://localhost:8080/v1/models
 ```
 
 返回格式：
+
 ```json
 {
   "object": "list",
   "data": [
-    {"id": "app1/agent1", "object": "model"},
-    {"id": "app1/agent2", "object": "model"},
-    {"id": "app2/agent1", "object": "model"}
+    {"id": "data-analysis/agent1", "object": "model", "owned_by": "data-analysis"},
+    {"id": "data-analysis/agent2", "object": "model", "owned_by": "data-analysis"},
+    {"id": "chatbot/my_agent", "object": "model", "owned_by": "chatbot"}
   ]
 }
 ```
@@ -165,7 +166,7 @@ curl http://localhost:8080/v1/models
 ### 管理端点
 
 | 端点 | 方法 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `/v1/admin/api-keys` | POST | 添加 API Key |
 | `/v1/admin/api-keys` | DELETE | 删除 API Key |
 | `/v1/admin/api-keys` | GET | 列出所有 API Key |
@@ -189,6 +190,7 @@ curl http://localhost:8080/v1/admin/api-keys
 ```
 
 响应：
+
 ```json
 {
   "count": 2,
@@ -203,7 +205,7 @@ curl http://localhost:8080/v1/admin/api-keys
 
 每个 API Key 会生成唯一的用户 ID，实现用户会话隔离：
 
-```
+```bash
 API Key: sk-abc123... → User ID: user_abc123def456...
 API Key: sk-xyz789... → User ID: user_xyz789abc123...
 ```
@@ -214,19 +216,17 @@ API Key: sk-xyz789... → User ID: user_xyz789abc123...
 
 ```bash
 # 构建并启动
-docker-compose up -d
+docker compose up -d
 
 # 查看日志
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ### Docker 配置说明
 
 | 环境变量 | 默认值 | 说明 |
-|---------|--------|------|
-| `ADK_HOST` | `http://host.docker.internal:8000` | 默认 ADK 后端地址 |
-| `ADK_BACKEND_MAPPING` | (空) | 多应用后端映射 |
-| `ADK_APP_NAME` | `agent` | 默认应用名称 |
+| --------- | -------- | ------ |
+| `ADK_BACKEND_MAPPING` | (空) | **必需**。多应用后端映射 |
 | `PORT` | `8080` | 服务端口 |
 | `ENABLE_API_KEY_AUTH` | `false` | 是否启用 API Key 认证 |
 | `API_KEYS` | (空) | API Key 列表 |
@@ -237,13 +237,13 @@ docker-compose logs -f
 
 访问交互式 API 文档：
 
-- **Swagger UI**: http://localhost:8080/docs
-- **ReDoc**: http://localhost:8080/redoc
+- **Swagger UI**: `http://localhost:8080/docs`
+- **ReDoc**: `http://localhost:8080/redoc`
 
 ### 核心端点
 
 | 端点 | 方法 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `/v1/chat/completions` | POST | 聊天补全（支持流式/非流式） |
 | `/v1/models` | GET | 获取可用模型列表 |
 | `/upload` | POST | 文件上传并转换为 Base64 |
@@ -251,7 +251,7 @@ docker-compose logs -f
 ### 健康检查
 
 | 端点 | 方法 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `/v1/health` | GET | 基础健康检查 |
 | `/v1/health/detailed` | GET | 详细健康检查（含 ADK 后端状态） |
 | `/v1/metrics` | GET | Prometheus 兼容的 metrics |
@@ -265,6 +265,7 @@ curl http://localhost:8080/v1/metrics
 ```
 
 支持的指标：
+
 - `adk_requests_total` - 总请求数
 - `adk_requests_successful` - 成功请求数
 - `adk_requests_failed` - 失败请求数
@@ -294,7 +295,7 @@ DATABASE_PATH=data/sessions.db   # 数据库路径
 ### 会话历史端点
 
 | 端点 | 方法 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `/v1/sessions/{session_id}/history` | GET | 获取会话历史记录 |
 | `/v1/sessions/{session_id}/export` | GET | 导出会话（支持 json/markdown） |
 | `/v1/history/search?q=xxx` | GET | 搜索消息内容 |
@@ -309,7 +310,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sk-your-api-key" \
   -d '{
-    "model": "agent",
+    "model": "data-analysis/my_agent",
     "messages": [{"role": "user", "content": "你好"}],
     "stream": false
   }'
@@ -318,10 +319,19 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ### 多应用调用
 
 ```bash
+# 调用 data-analysis 后端的 agent1
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "app1/special_agent",
+    "model": "data-analysis/agent1",
+    "messages": [{"role": "user", "content": "分析一下数据"}]
+  }'
+
+# 调用 chatbot 后端的 my_agent
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "chatbot/my_agent",
     "messages": [{"role": "user", "content": "你好"}]
   }'
 ```
@@ -332,7 +342,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "agent",
+    "model": "data-analysis/my_agent",
     "messages": [{"role": "user", "content": "请详细介绍一下"}],
     "stream": true
   }'
@@ -344,7 +354,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "agent",
+    "model": "data-analysis/my_agent",
     "messages": [{
       "role": "user",
       "content": [
@@ -363,7 +373,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 2. 配置：
    - **API 地址**: `http://your-host:8080/v1`
    - **API Key**: 配置的密钥（如启用）
-   - **模型**: 使用 `app_name/agent_name` 格式
+   - **模型**: 使用 `mapping_key/agent_name` 格式（如 `data-analysis/my_agent`）
 
 ### Dify
 
@@ -371,11 +381,11 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 2. 配置：
    - **API Base URL**: `http://your-host:8080/v1`
    - **API Key**: 配置的密钥（如启用）
-   - **模型名称**: 使用 `app_name/agent_name` 格式
+   - **模型名称**: 使用 `mapping_key/agent_name` 格式（如 `data-analysis/my_agent`）
 
 ## 项目结构
 
-```
+```bash
 adk_to_openai_api/
 ├── app/
 │   ├── __init__.py
@@ -405,38 +415,44 @@ adk_to_openai_api/
 ## 配置参考
 
 | 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `ADK_HOST` | `http://localhost:8000` | 默认 ADK 后端地址 |
-| `ADK_APP_NAME` | `agent` | 默认应用名称 |
-| `ADK_BACKEND_MAPPING` | (空) | 多应用后端映射 |
+| ------ | -------- | ------ |
+| `ADK_BACKEND_MAPPING` | (空) | **必需**。多应用后端映射，格式：`key1:url1,key2:url2` |
 | `PORT` | `8080` | 服务端口 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
-| `ENABLE_API_KEY_AUTH` | `false` | 是否启用 API Key |
+| `ENABLE_API_KEY_AUTH` | `false` | 是否启用 API Key 认证 |
 | `API_KEYS` | (空) | API Key 列表（逗号分隔） |
-| `MAX_FILE_SIZE_MB` | `20` | 最大文件大小 |
+| `MAX_FILE_SIZE_MB` | `20` | 最大文件大小（MB） |
+| `FILE_DOWNLOAD_TIMEOUT` | `60` | 文件下载超时（秒） |
+| `MAX_CONCURRENT_DOWNLOADS` | `10` | 最大并发下载数 |
 | `SESSION_HISTORY_ENABLED` | `true` | 启用会话记录 |
+| `SESSION_RETENTION_DAYS` | `30` | 会话保留天数 |
 | `DATABASE_PATH` | `data/sessions.db` | 数据库路径 |
+| `ENABLE_METRICS` | `true` | 启用监控指标 |
+| `METRICS_RETENTION_HOURS` | `24` | 指标保留小时数 |
+| `ALLOWED_ORIGINS` | `*` | CORS 允许的来源 |
 
 ## 故障排除
 
 ### ADK 连接失败
 
-```
+```bash
 ERROR: ADK HTTP error: 503 - Service Unavailable
 ```
 
 **解决**:
+
 1. 检查 ADK 后端是否运行
 2. 使用 `/v1/health/detailed` 检查连接状态
 3. 确认 `ADK_HOST` 和 `ADK_BACKEND_MAPPING` 配置正确
 
 ### 认证失败
 
-```
+```bash
 ERROR: Invalid API key provided
 ```
 
 **解决**:
+
 1. 确认 `Authorization` 头格式正确：`Bearer sk-your-key`
 2. 检查 API Key 是否已在管理端点中添加
 
