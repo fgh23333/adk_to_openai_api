@@ -1,7 +1,8 @@
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, Union
-from app.config import settings
+from app.core.config import settings
+from app.core.api_key_manager import get_api_key_manager
 import logging
 import hashlib
 
@@ -13,8 +14,7 @@ security = HTTPBearer(auto_error=False)
 
 class APIKeyAuth:
     def __init__(self):
-        self.require_api_key = settings.require_api_key
-        self.api_keys = settings.api_keys if settings.api_keys else [settings.default_api_key]
+        self.api_key_manager = get_api_key_manager()
 
     async def verify_api_key(self, credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> Union[bool, str]:
         """
@@ -30,7 +30,7 @@ class APIKeyAuth:
             HTTPException: If API key is invalid or missing
         """
         # If API key verification is disabled, return default key
-        if not self.require_api_key:
+        if not settings.enable_api_key_auth:
             return settings.default_api_key
 
         # If no credentials provided
@@ -52,8 +52,8 @@ class APIKeyAuth:
         # Extract API key from Bearer token
         api_key = credentials.credentials
 
-        # Validate API key
-        if api_key not in self.api_keys:
+        # Validate API key using dynamic manager
+        if not self.api_key_manager.has_key(api_key):
             logger.warning(f"Invalid API key provided: {api_key[:10]}...")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -72,11 +72,19 @@ class APIKeyAuth:
         return api_key
 
     @staticmethod
-    def get_session_id_from_api_key(api_key: str) -> str:
-        """Generate a stable session ID from API key."""
-        # Use hash to create a stable session ID
-        key_hash = hashlib.md5(api_key.encode()).hexdigest()[:12]
-        return f"session_{key_hash}"
+    def get_session_id_from_api_key(api_key: Optional[str]) -> str:
+        """
+        从 API key 生成用户标识符
+
+        直接使用 API key 的 hash 作为用户 ID，确保不同 API key 的用户完全隔离
+        当 api_key 为 None 时（未启用认证），返回默认用户 ID
+        """
+        if not api_key:
+            # 未启用认证时，返回默认用户 ID
+            return "user_default"
+        # 使用 API key 的 MD5 hash 作为用户 ID
+        key_hash = hashlib.md5(api_key.encode()).hexdigest()[:16]
+        return f"user_{key_hash}"
 
 
 # Create global auth instance

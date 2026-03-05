@@ -12,7 +12,14 @@
       "Bash(sqlite3:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push)"
+      "Bash(git push)",
+      "Bash(git checkout:*)",
+      "Bash(git config:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(D:/Programs/Python/adk_to_openai_api/.env.example:*)",
+      "Bash(git mv:*)",
+      "Bash(grep:*)"
     ]
   }
 }

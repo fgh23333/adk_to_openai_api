@@ -304,7 +304,7 @@ def get_database() -> SessionDatabase:
     """Get the global database instance."""
     global _db
     if _db is None:
-        from app.config import settings
+        from app.core.config import settings
         db_path = getattr(settings, 'database_path', 'data/sessions.db')
         _db = SessionDatabase(db_path)
     return _db

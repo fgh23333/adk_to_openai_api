@@ -3,12 +3,12 @@ import time
 from typing import AsyncGenerator, Optional
 import httpx
 from contextlib import asynccontextmanager
-from app.config import settings
-from app.models import (
+from app.core.config import settings
+from app.schemas.models import (
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionResponseChoice,
     ChatMessage, ADKRunRequest, ADKMessage, ADKPart, ListModelsResponse, ModelInfo
 )
-from app.multimodal import MultimodalProcessor
+from app.utils.multimodal import MultimodalProcessor
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 
 class ADKClient:
     def __init__(self):
-        self.adk_host = settings.adk_host
-        self.default_app_name = settings.adk_app_name
         self.multimodal_processor = MultimodalProcessor()
         self._session_cache = set()  # Simple cache for created sessions
         self._content_cache = {}  # Cache to track sent content for deduplication
@@ -26,10 +24,22 @@ class ADKClient:
         # Connection pool for better performance
         self._http_client: Optional[httpx.AsyncClient] = None
         self._http_limits = httpx.Limits(
-            max_connections=100,      # Total max connections
-            max_keepalive_connections=20,  # Keep-alive connections
-            keepalive_expiry=30.0     # Keep-alive expiry time
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=30.0
         )
+
+    def get_backend_url(self, mapping_key: str) -> str:
+        """
+        根据映射 key 获取对应的后端地址
+
+        Args:
+            mapping_key: 映射 key（如 data-analysis）
+
+        Returns:
+            backend_url
+        """
+        return settings.get_backend_url(mapping_key)
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with connection pooling."""
@@ -61,18 +71,22 @@ class ADKClient:
         """Create a non-streaming chat completion."""
         adk_request = await self._convert_to_adk_request(request)
 
+        # 获取对应的后端地址
+        backend_url = self.get_backend_url(adk_request._mapping_key)
+
         # Ensure session exists before running
-        await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId)
+        # 使用 agent_name 作为 ADK API 的 appName
+        await self._ensure_session(adk_request._agent_name, adk_request.userId, adk_request.sessionId, backend_url)
 
         # Log the request for debugging
         request_data = adk_request.to_adk_format()
-        logger.info(f"Sending ADK request to {self.adk_host}/run")
+        logger.info(f"Sending ADK request to {backend_url}/run (app={adk_request.appName})")
         logger.debug(f"Request data: {request_data}")
 
         try:
             client = await self._get_client()
             response = await client.post(
-                f"{self.adk_host}/run",
+                f"{backend_url}/run",
                 json=request_data
             )
             logger.info(f"ADK response status: {response.status_code}")
@@ -96,12 +110,16 @@ class ADKClient:
         adk_request = await self._convert_to_adk_request(request)
         adk_request.streaming = True  # Enable ADK streaming
 
+        # 获取对应的后端地址
+        backend_url = self.get_backend_url(adk_request._mapping_key)
+
         # Ensure session exists before running
-        await self._ensure_session(adk_request.appName, adk_request.userId, adk_request.sessionId)
+        # 使用 agent_name 作为 ADK API 的 appName
+        await self._ensure_session(adk_request._agent_name, adk_request.userId, adk_request.sessionId, backend_url)
 
         # Log the request for debugging
         request_data = adk_request.to_adk_format()
-        logger.info(f"Sending ADK request to {self.adk_host}/run_sse (real streaming)")
+        logger.info(f"Sending ADK request to {backend_url}/run_sse (real streaming, app={adk_request.appName})")
 
         # Track sent content for deduplication
         sent_content_tracker = {}
@@ -112,7 +130,7 @@ class ADKClient:
             client = await self._get_client()
             async with client.stream(
                 "POST",
-                f"{self.adk_host}/run_sse",
+                f"{backend_url}/run_sse",
                 json=request_data,
                 headers={"Accept": "text/event-stream"}
             ) as response:
@@ -283,30 +301,115 @@ class ADKClient:
         }
         return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-    async def list_models(self) -> ListModelsResponse:
-        """List available models (ADK agents)."""
-        # For now, return a default model. In a real implementation, 
-        # you might want to query ADK for available agents.
-        model = ModelInfo(
-            id=self.default_app_name,
-            created=int(time.time()),
-            owned_by="adk"
-        )
-        
-        return ListModelsResponse(data=[model])
+    async def list_apps(self, backend_url: str) -> list:
+        """
+        从 ADK 后端获取应用列表
+
+        Args:
+            backend_url: 后端地址
+
+        Returns:
+            应用列表，格式: [{"name": "app1", "agents": ["agent1", ...]}, ...]
+            如果后端不可达，返回空列表
+        """
+        try:
+            client = await self._get_client()
+            response = await client.get(f"{backend_url}/list-apps")
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"Got apps list from {backend_url}/list-apps: {data}")
+            return data
+        except Exception as e:
+            logger.warning(f"Failed to get apps list from {backend_url}: {e}")
+            return []
+
+    async def list_models(self, request_model: str = None) -> ListModelsResponse:
+        """
+        List available models (ADK agents).
+
+        仅从可访问的后端获取模型列表。如果后端不可达，不返回该后端的模型。
+
+        返回格式: {mapping_key}/{agent_name}
+        例如: data-analysis/my_agent, data-analysis/other_agent
+
+        Args:
+            request_model: 请求中的 model 字段（可选），用于确定从哪个后端获取
+        """
+        models = []
+        seen_models = set()  # 去重
+
+        # 确定要查询的后端
+        backends_to_query = {}
+
+        if request_model and "/" in request_model:
+            # 如果指定了 model，只查询对应的后端
+            mapping_key, _ = settings.parse_model(request_model)
+            backend_url = self.get_backend_url(mapping_key)
+            backends_to_query[mapping_key] = backend_url
+        else:
+            # 否则，查询所有配置的后端
+            backends_to_query = settings.adk_backend_mapping.copy()
+
+        # 从每个后端获取模型
+        for mapping_key, backend_url in backends_to_query.items():
+            try:
+                apps_data = await self.list_apps(backend_url)
+
+                if isinstance(apps_data, list):
+                    # 处理返回的数据
+                    # 期望格式: [{"name": "my_agent"}, {"name": "other_agent"}]
+                    # 或者: ["my_agent", "other_agent"]
+                    for item in apps_data:
+                        if isinstance(item, dict):
+                            # 字典格式，提取 name 字段作为 agent_name
+                            agent_name = item.get("name", "")
+                            if agent_name:
+                                model_id = settings.format_model(mapping_key, agent_name)
+                                if model_id not in seen_models:
+                                    seen_models.add(model_id)
+                                    models.append(ModelInfo(
+                                        id=model_id,
+                                        created=int(time.time()),
+                                        owned_by=mapping_key
+                                    ))
+                        elif isinstance(item, str):
+                            # 字符串格式，直接作为 agent_name
+                            model_id = settings.format_model(mapping_key, item)
+                            if model_id not in seen_models:
+                                seen_models.add(model_id)
+                                models.append(ModelInfo(
+                                    id=model_id,
+                                    created=int(time.time()),
+                                    owned_by=mapping_key
+                                ))
+            except Exception as e:
+                logger.warning(f"Failed to get models from {backend_url}: {e}")
+                # 继续尝试其他后端
+
+        return ListModelsResponse(data=models)
     
     async def _convert_to_adk_request(self, request: ChatCompletionRequest) -> ADKRunRequest:
         """Convert OpenAI request to ADK request format."""
+        # 解析 model 字段，提取 app_name 和 agent_name
+        if not request.model:
+            raise ValueError(
+                "Model is required. Must use 'app_name/agent_name' format. "
+                f"Available apps: {list(settings.adk_backend_mapping.keys())}"
+            )
+
+        app_name, agent_name = settings.parse_model(request.model)
+        logger.info(f"Parsed model: app={app_name}, agent={agent_name}")
+
         # Extract the last user message (ADK is stateful)
         last_message = request.messages[-1] if request.messages else None
-        
+
         if not last_message or last_message.role != "user":
             raise ValueError("Last message must be from user")
-        
-        # Generate session ID from user field
+
+        # Generate session ID from user field and agent
         user_id = request.user or "anonymous"
         session_id = f"session_{user_id}"
-        
+
         # Process content (handle multimodal)
         if isinstance(last_message.content, str):
             # Simple text content
@@ -317,7 +420,7 @@ class ADKClient:
             logger.info(f"Processing multimodal content with {len(last_message.content)} parts")
             for i, part in enumerate(last_message.content):
                 logger.info(f"Part {i}: type={part.type}, content={str(part)[:100]}...")
-            
+
             _, adk_parts = await self.multimodal_processor.process_content(last_message.content)
             logger.info(f"Processed into {len(adk_parts)} ADK parts")
             for i, part in enumerate(adk_parts):
@@ -327,22 +430,29 @@ class ADKClient:
                     logger.info(f"ADK Part {i}: inlineData mimeType={part.inlineData.mimeType}, dataLength={len(part.inlineData.data)}")
                 else:
                     logger.info(f"ADK Part {i}: {part}")
-        
+
         # Create ADK message
         adk_message = ADKMessage(
             role="user",
             parts=adk_parts
         )
-        
-        # Create ADK request - try different possible formats
+
+        # Create ADK request
+        # appName: 使用 agent_name（ADK 提供的真实名字，如 my_agent）
+        # app_name (mapping key) 只用于路由到正确的后端
         adk_request = ADKRunRequest(
-            appName=request.model or self.default_app_name,
+            appName=agent_name,  # 使用 ADK agent 名，不是 mapping key
             userId=user_id,
             sessionId=session_id,
             streaming=request.stream,
             newMessage=adk_message
         )
-        
+
+        # 存储原始 model 字符串用于响应
+        adk_request._original_model = request.model
+        adk_request._mapping_key = app_name  # mapping key 用于路由
+        adk_request._agent_name = agent_name  # agent_name 用于 ADK 请求
+
         return adk_request
     
     def _convert_from_adk_response(self, adk_response, model: str) -> ChatCompletionResponse:
@@ -555,20 +665,32 @@ class ADKClient:
             logger.error(f"Error converting ADK event to OpenAI chunk: {e}")
             return None
     
-    async def _ensure_session(self, app_name: str, user_id: str, session_id: str):
-        """Ensure session exists before running agent."""
-        session_key = f"{app_name}:{user_id}:{session_id}"
+    async def _ensure_session(self, agent_name: str, user_id: str, session_id: str, backend_url: str = None):
+        """
+        Ensure session exists before running agent.
+
+        Args:
+            agent_name: ADK agent 名（用于 ADK API 路径）
+            user_id: 用户 ID
+            session_id: 会话 ID
+            backend_url: 后端 URL（可选）
+        """
+        session_key = f"{agent_name}:{user_id}:{session_id}"
 
         if session_key in self._session_cache:
             logger.debug(f"Session already in cache: {session_key}")
             return
 
+        if backend_url is None:
+            # 如果没有提供 backend_url，无法创建会话
+            raise ValueError("backend_url must be provided when calling _ensure_session")
+
         try:
             client = await self._get_client()
             # Create session using ADK API
-            logger.info(f"Creating ADK session: {session_id} for app={app_name}, user={user_id}")
+            logger.info(f"Creating ADK session: {session_id} for agent={agent_name}, user={user_id} at {backend_url}")
             response = await client.post(
-                f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions",
+                f"{backend_url}/apps/{agent_name}/users/{user_id}/sessions",
                 json={"sessionId": session_id}
             )
 
@@ -588,15 +710,23 @@ class ADKClient:
             logger.error(f"Error ensuring ADK session: {e}")
             # Don't raise here, let the main request continue
 
-    async def _delete_session(self, app_name: str, user_id: str, session_id: str) -> bool:
-        """Delete an ADK session."""
-        session_key = f"{app_name}:{user_id}:{session_id}"
+    async def _delete_session(self, agent_name: str, user_id: str, session_id: str, backend_url: str = None) -> bool:
+        """
+        Delete an ADK session.
+
+        Args:
+            agent_name: ADK agent 名（用于 ADK API 路径）
+            user_id: 用户 ID
+            session_id: 会话 ID
+            backend_url: 后端 URL（可选）
+        """
+        session_key = f"{agent_name}:{user_id}:{session_id}"
 
         try:
             client = await self._get_client()
-            logger.info(f"Deleting ADK session: {session_id}")
+            logger.info(f"Deleting ADK session: {session_id} at {backend_url}")
             response = await client.delete(
-                f"{self.adk_host}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+                f"{backend_url}/apps/{agent_name}/users/{user_id}/sessions/{session_id}"
             )
 
             if response.status_code in [200, 204, 404]:
@@ -611,98 +741,157 @@ class ADKClient:
             logger.error(f"Error deleting ADK session: {e}")
             return False
 
-    async def _reset_session(self, app_name: str, user_id: str, session_id: str):
-        """Reset a corrupted session by deleting and recreating it."""
+    async def _reset_session(self, agent_name: str, user_id: str, session_id: str, backend_url: str):
+        """
+        Reset a corrupted session by deleting and recreating it.
+
+        Args:
+            agent_name: ADK agent 名（用于 ADK API 路径）
+            user_id: 用户 ID
+            session_id: 会话 ID
+            backend_url: 后端 URL
+        """
+        session_key = f"{agent_name}:{user_id}:{session_id}"
+
         logger.warning(f"Resetting corrupted session: {session_id}")
 
         # Delete the session
-        await self._delete_session(app_name, user_id, session_id)
+        await self._delete_session(agent_name, user_id, session_id, backend_url)
 
         # Clear from cache so it will be recreated
-        session_key = f"{app_name}:{user_id}:{session_id}"
         self._session_cache.discard(session_key)
 
         # Create new session
-        await self._ensure_session(app_name, user_id, session_id)
+        await self._ensure_session(agent_name, user_id, session_id, backend_url)
 
     # ============ Public API Methods ============
 
     async def check_health(self) -> dict:
         """
-        Check health status of ADK backend connection.
-        Uses separate client with short timeout for health checks.
-        Returns dict with status and details.
+        Check health status of all configured ADK backends.
+
+        Returns dict with overall status and per-backend details.
         """
+        backends = settings.adk_backend_mapping
+
+        if not backends:
+            return {
+                "middleware": "healthy",
+                "status": "error",
+                "error": "No backends configured in ADK_BACKEND_MAPPING",
+                "backends": {}
+            }
+
         result = {
             "middleware": "healthy",
-            "adk_backend": "unknown",
-            "adk_host": self.adk_host,
-            "details": {}
+            "status": "healthy",
+            "backends": {}
         }
 
-        try:
-            # Use separate client with short timeout for health checks
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                start_time = time.time()
-                response = await client.get(f"{self.adk_host}/")
-                latency = (time.time() - start_time) * 1000  # ms
+        all_healthy = True
 
-                if response.status_code < 500:
-                    result["adk_backend"] = "healthy"
-                    result["details"]["latency_ms"] = round(latency, 2)
-                    result["details"]["status_code"] = response.status_code
-                else:
-                    result["adk_backend"] = "unhealthy"
-                    result["details"]["error"] = f"HTTP {response.status_code}"
+        for app_name, backend_url in backends.items():
+            backend_result = {
+                "url": backend_url,
+                "status": "unknown"
+            }
 
-        except httpx.TimeoutException:
-            result["adk_backend"] = "timeout"
-            result["details"]["error"] = "Connection timeout"
-        except httpx.ConnectError as e:
-            result["adk_backend"] = "unreachable"
-            result["details"]["error"] = str(e)
-        except Exception as e:
-            result["adk_backend"] = "error"
-            result["details"]["error"] = str(e)
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    start_time = time.time()
+                    response = await client.get(f"{backend_url}/")
+                    latency = (time.time() - start_time) * 1000
 
-        result["healthy"] = result["adk_backend"] == "healthy"
+                    if response.status_code < 500:
+                        backend_result["status"] = "healthy"
+                        backend_result["latency_ms"] = round(latency, 2)
+                    else:
+                        backend_result["status"] = "unhealthy"
+                        backend_result["error"] = f"HTTP {response.status_code}"
+                        all_healthy = False
+
+            except httpx.TimeoutException:
+                backend_result["status"] = "timeout"
+                backend_result["error"] = "Connection timeout"
+                all_healthy = False
+            except httpx.ConnectError as e:
+                backend_result["status"] = "unreachable"
+                backend_result["error"] = str(e)
+                all_healthy = False
+            except Exception as e:
+                backend_result["status"] = "error"
+                backend_result["error"] = str(e)
+                all_healthy = False
+
+            result["backends"][app_name] = backend_result
+
+        if not all_healthy:
+            result["status"] = "degraded"
+
         return result
 
-    async def delete_session(self, app_name: str, user_id: str, session_id: str) -> dict:
+    async def delete_session(self, agent_name: str, user_id: str, session_id: str, mapping_key: str = None) -> dict:
         """
         Delete a specific session.
-        Returns result dict.
+
+        Args:
+            agent_name: ADK agent 名
+            user_id: 用户 ID
+            session_id: 会话 ID
+            mapping_key: 映射 key（用于获取 backend_url）
+
+        Returns:
+            结果字典
         """
-        success = await self._delete_session(app_name, user_id, session_id)
+        if mapping_key is None:
+            mapping_key = agent_name  # 假设 agent_name 就是 mapping_key
+        backend_url = self.get_backend_url(mapping_key)
+        success = await self._delete_session(agent_name, user_id, session_id, backend_url)
         return {
             "success": success,
             "session_id": session_id,
-            "app_name": app_name,
+            "agent_name": agent_name,
             "user_id": user_id
         }
 
-    async def reset_session(self, app_name: str, user_id: str, session_id: str) -> dict:
+    async def reset_session(self, agent_name: str, user_id: str, session_id: str, mapping_key: str = None) -> dict:
         """
         Reset a session by deleting and recreating it.
-        Returns result dict.
+
+        Args:
+            agent_name: ADK agent 名
+            user_id: 用户 ID
+            session_id: 会话 ID
+            mapping_key: 映射 key（用于获取 backend_url）
+
+        Returns:
+            结果字典
         """
-        await self._reset_session(app_name, user_id, session_id)
+        if mapping_key is None:
+            mapping_key = agent_name  # 假设 agent_name 就是 mapping_key
+        backend_url = self.get_backend_url(mapping_key)
+        await self._reset_session(agent_name, user_id, session_id, backend_url)
         return {
             "success": True,
             "session_id": session_id,
-            "app_name": app_name,
+            "agent_name": agent_name,
             "user_id": user_id,
             "action": "reset"
         }
 
     def list_cached_sessions(self) -> list:
-        """List all sessions in local cache."""
+        """
+        List all sessions in local cache.
+
+        Returns:
+            会话列表，每个会话包含 agent_name, user_id, session_id
+        """
         sessions = []
         for session_key in self._session_cache:
             parts = session_key.split(":")
             if len(parts) == 3:
                 sessions.append({
-                    "app_name": parts[0],
+                    "agent_name": parts[0],  # ADK agent 名
                     "user_id": parts[1],
                     "session_id": parts[2]
                 })

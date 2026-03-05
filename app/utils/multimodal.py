@@ -1,13 +1,25 @@
 import re
 import base64
 import mimetypes
-import magic
 import io
 import csv
 from typing import List, Optional, Tuple, Union
 import httpx
-from app.config import settings
-from app.models import ContentPart, ADKPart, ADKInlineData
+from app.core.config import settings
+from app.schemas.models import ContentPart, ADKPart, ADKInlineData
+import logging
+
+# Cross-platform magic import
+try:
+    import magic
+except ImportError:
+    magic = None
+
+logger = logging.getLogger(__name__)
+from typing import List, Optional, Tuple, Union
+import httpx
+from app.core.config import settings
+from app.schemas.models import ContentPart, ADKPart, ADKInlineData
 import logging
 
 logger = logging.getLogger(__name__)
@@ -191,7 +203,7 @@ class TextExtractor:
 class MultimodalProcessor:
     def __init__(self):
         self.max_file_size = settings.max_file_size_mb * 1024 * 1024  # Convert to bytes
-        self.timeout = settings.download_timeout
+        self.timeout = settings.file_download_timeout
         self.text_extractor = TextExtractor()
 
         # Gemini/ADK 支持的多模态文件类型 + 需要文本提取的文件类型
@@ -293,7 +305,11 @@ class MultimodalProcessor:
 
             # Detect MIME type
             if not mime_type:
-                mime_type = magic.from_buffer(file_data, mime=True)
+                if magic:
+                    mime_type = magic.from_buffer(file_data, mime=True)
+                else:
+                    # Fallback to mimetypes if libmagic is not available
+                    mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
 
             # Get all supported types
             all_supported_types = []
