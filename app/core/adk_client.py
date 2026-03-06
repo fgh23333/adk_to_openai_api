@@ -4,6 +4,7 @@ from typing import AsyncGenerator, Optional
 import httpx
 from contextlib import asynccontextmanager
 from app.core.config import settings
+from app.core.backend_manager import get_backend_manager
 from app.schemas.models import (
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionResponseChoice,
     ChatMessage, ADKRunRequest, ADKMessage, ADKPart, ListModelsResponse, ModelInfo
@@ -38,8 +39,19 @@ class ADKClient:
 
         Returns:
             backend_url
+
+        Raises:
+            ValueError: 如果后端未配置或已禁用
         """
-        return settings.get_backend_url(mapping_key)
+        backend_manager = get_backend_manager()
+        url = backend_manager.get_backend_url(mapping_key)
+        if url is None:
+            available = backend_manager.get_all_enabled_keys()
+            raise ValueError(
+                f"Backend '{mapping_key}' not configured or disabled. "
+                f"Available backends: {available}"
+            )
+        return url
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with connection pooling."""
@@ -348,7 +360,7 @@ class ADKClient:
             backends_to_query[mapping_key] = backend_url
         else:
             # 否则，查询所有配置的后端
-            backends_to_query = settings.adk_backend_mapping.copy()
+            backends_to_query = get_backend_manager().get_all_enabled_backends().copy()
 
         # 从每个后端获取模型
         for mapping_key, backend_url in backends_to_query.items():
@@ -394,7 +406,7 @@ class ADKClient:
         if not request.model:
             raise ValueError(
                 "Model is required. Must use 'app_name/agent_name' format. "
-                f"Available apps: {list(settings.adk_backend_mapping.keys())}"
+                f"Available apps: {get_backend_manager().get_all_enabled_keys()}"
             )
 
         app_name, agent_name = settings.parse_model(request.model)
@@ -772,7 +784,7 @@ class ADKClient:
 
         Returns dict with overall status and per-backend details.
         """
-        backends = settings.adk_backend_mapping
+        backends = get_backend_manager().get_all_enabled_backends()
 
         if not backends:
             return {
