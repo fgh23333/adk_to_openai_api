@@ -10,3 +10,7 @@ __pycache__/
 .env.test.local
 .env.production.local
 *.db
+
+# Ignore data folder contents but keep the folder
+data/*
+!data/.gitkeep

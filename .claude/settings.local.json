@@ -22,7 +22,8 @@
       "Bash(grep:*)",
       "Bash(sed:*)",
       "Bash(rm:*)",
-      "Bash(touch:*)"
+      "Bash(touch:*)",
+      "Bash(mkdir:*)"
     ]
   }
 }
