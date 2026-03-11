@@ -167,20 +167,23 @@ curl http://localhost:8080/v1/models
 
 | 端点 | 方法 | 说明 |
 | ------ | ------ | ------ |
-| `/v1/admin/api-keys` | POST | 添加 API Key |
-| `/v1/admin/api-keys` | DELETE | 删除 API Key |
 | `/v1/admin/api-keys` | GET | 列出所有 API Key |
+| `/v1/admin/api-keys` | POST | 添加 API Key |
+| `/v1/admin/api-keys/{api_key}` | DELETE | 删除 API Key |
+| `/v1/admin/api-keys/reload` | POST | 重新加载 API Keys |
 
 ### 添加 API Key
 
 ```bash
-curl -X POST "http://localhost:8080/v1/admin/api-keys?api_key=sk-new-key-123"
+curl -X POST "http://localhost:8080/v1/admin/api-keys" \
+  -H "Content-Type: application/json" \
+  -d '{"api_key": "sk-new-key-123", "metadata": {"user": "test"}}'
 ```
 
 ### 删除 API Key
 
 ```bash
-curl -X DELETE "http://localhost:8080/v1/admin/api-keys?api_key=sk-key-to-delete"
+curl -X DELETE "http://localhost:8080/v1/admin/api-keys/sk-key-to-delete"
 ```
 
 ### 列出 API Key
@@ -246,7 +249,7 @@ docker compose logs -f
 | ------ | ------ | ------ |
 | `/v1/chat/completions` | POST | 聊天补全（支持流式/非流式） |
 | `/v1/models` | GET | 获取可用模型列表 |
-| `/upload` | POST | 文件上传并转换为 Base64 |
+| `/v1/upload` | POST | 文件上传并转换为 Base64 |
 
 ### 健康检查
 
@@ -255,6 +258,27 @@ docker compose logs -f
 | `/v1/health` | GET | 基础健康检查 |
 | `/v1/health/detailed` | GET | 详细健康检查（含 ADK 后端状态） |
 | `/v1/metrics` | GET | Prometheus 兼容的 metrics |
+
+### 管理端点
+
+| 端点 | 方法 | 说明 |
+| ------ | ------ | ------ |
+| `/v1/admin/api-keys` | GET | 列出所有 API Keys |
+| `/v1/admin/api-keys` | POST | 添加 API Key |
+| `/v1/admin/api-keys/{key}` | DELETE | 删除 API Key |
+| `/v1/admin/api-keys/reload` | POST | 重新加载 API Keys |
+| `/v1/admin/backends` | GET | 列出所有后端 |
+| `/v1/admin/backends` | POST | 添加后端 |
+| `/v1/admin/backends/{key}` | PUT | 更新后端 |
+| `/v1/admin/backends/{key}` | DELETE | 删除后端 |
+| `/v1/admin/backends/health` | GET | 检查所有后端健康状态 |
+| `/v1/admin/backends/{key}/health` | GET | 检查单个后端健康状态 |
+| `/v1/admin/backends/reload` | POST | 重新加载后端配置 |
+| `/v1/admin/backends/export` | POST | 导出后端配置 |
+| `/v1/admin/backends/import` | POST | 导入后端配置 |
+| `/v1/admin/config` | GET | 获取当前配置 |
+| `/v1/admin/config/reload` | POST | 热重载配置 |
+| `/v1/admin/config/validate` | GET | 验证配置 |
 
 ## 监控分析
 

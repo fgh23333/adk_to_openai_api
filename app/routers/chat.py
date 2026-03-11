@@ -2,7 +2,7 @@
 聊天完成接口路由
 """
 from fastapi import APIRouter
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Optional, Union
 
 from fastapi import HTTPException, Request, UploadFile, File, Header
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -13,7 +13,8 @@ from app.core.metrics import get_metrics_collector, RequestMetrics
 from app.core.auth import verify_api_key_dependency, auth
 from app.schemas.models import (
     ChatCompletionRequest, ChatCompletionResponse,
-    ListModelsResponse, ModelInfo
+    ListModelsResponse, ModelInfo,
+    UploadBinaryResponse, UploadTextResponse, RootResponse
 )
 from app.database.database import get_database
 import logging
@@ -315,11 +316,11 @@ async def list_models(
     return await adk_client.list_models(request_model=query_model)
 
 
-@router.post("/upload")
+@router.post("/v1/upload", response_model=Union[UploadBinaryResponse, UploadTextResponse], summary="上传文件")
 async def upload_file(
     file: UploadFile = File(...),
     api_key: str = None
-) -> dict:
+):
     """Upload file and convert to Base64 format."""
     from app.utils.multimodal import MultimodalProcessor
 
@@ -352,34 +353,30 @@ async def upload_file(
     )
 
     if inline_data:
-        return {
-            "success": True,
-            "filename": file.filename,
-            "mime_type": inline_data.mimeType,
-            "base64_data": inline_data.data,
-            "size": file_size,
-            "type": "binary"
-        }
+        return UploadBinaryResponse(
+            filename=file.filename,
+            mime_type=inline_data.mimeType,
+            base64_data=inline_data.data,
+            size=file_size
+        )
     elif extracted_text:
-        return {
-            "success": True,
-            "filename": file.filename,
-            "original_mime_type": detected_mime,
-            "extracted_text": extracted_text,
-            "text_length": len(extracted_text),
-            "size": file_size,
-            "type": "text"
-        }
+        return UploadTextResponse(
+            filename=file.filename,
+            original_mime_type=detected_mime,
+            extracted_text=extracted_text,
+            text_length=len(extracted_text),
+            size=file_size
+        )
     else:
         raise HTTPException(status_code=500, detail="Failed to process file")
 
 
-@router.get("/")
-async def root() -> dict:
-    """Root endpoint."""
+@router.get("/", response_model=RootResponse, summary="服务信息")
+async def root():
+    """Root endpoint - 服务基本信息。"""
     from app.core.config import get_request_id
-    return {
-        "message": "ADK Middleware API is running",
-        "version": "1.3.0",
-        "request_id": get_request_id()
-    }
+    return RootResponse(
+        message="ADK Middleware API is running",
+        version="1.3.0",
+        request_id=get_request_id()
+    )

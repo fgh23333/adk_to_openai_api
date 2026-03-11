@@ -27,8 +27,17 @@ from app.core.metrics import get_metrics_collector
 from app.core.api_key_manager import get_api_key_manager
 from app.database.database import init_database
 
+# 日志配置
+from app.core.logging_config import (
+    setup_logging, set_request_context, clear_request_context,
+    log_request, log_response
+)
+
 # 路由
 from app.routers import chat, admin
+
+# 初始化日志系统
+setup_logging(json_format=None, log_level=settings.log_level)
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +69,28 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get('X-Request-ID') or f"req_{uuid.uuid4().hex[:12]}"
         set_request_id(request_id)
 
+        # 设置请求上下文
+        set_request_context(request_id=request_id)
+
         start_time = time.time()
+
+        # 记录请求
+        log_request(request.method, request.url.path)
+
         response = await call_next(request)
 
         process_time = time.time() - start_time
+        elapsed_ms = process_time * 1000
+
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Process-Time"] = f"{process_time:.3f}s"
 
-        logger.info(f"Request completed in {process_time:.3f}s")
+        # 记录响应
+        log_response(response.status_code, elapsed_ms)
+
+        # 清理请求上下文
+        clear_request_context()
+
         return response
 
 
@@ -79,6 +102,12 @@ async def lifespan(app: FastAPI):
     global db
     # Startup
     logger.info("ADK Middleware starting up...")
+
+    # 验证配置
+    from app.core.config import get_settings
+    settings_instance = get_settings()
+    if not settings_instance.validate_on_startup():
+        logger.error("Configuration validation failed, but continuing startup...")
 
     # Initialize database
     if settings.session_history_enabled:
@@ -274,20 +303,38 @@ app.include_router(admin.router)
 # ========================================
 # 健康检查和指标端点（放在最后作为默认路由）
 # ========================================
-@app.get("/health")
-async def health_check() -> dict:
+@app.get("/v1/health", summary="基础健康检查")
+async def health_check():
     """Basic health check for Docker and Traefik."""
-    return {"status": "healthy", "message": "OK"}
+    from app.schemas.models import HealthCheckResponse
+    return HealthCheckResponse()
 
 
-@app.get("/v1/health/detailed")
-@app.get("/v1/health/detailed")
-async def health_check_detailed() -> dict:
+@app.get("/v1/health/detailed", summary="详细健康检查")
+async def health_check_detailed():
     """Detailed health check including ADK backend status."""
     from app.core.adk_client import ADKClient
+    from app.schemas.models import DetailedHealthResponse, DetailedHealthBackendResult
+
     adk_client = ADKClient()
     health_status = await adk_client.check_health()
-    return health_status
+
+    # 转换为 Pydantic 模型
+    backends = {}
+    for key, value in health_status.get("backends", {}).items():
+        backends[key] = DetailedHealthBackendResult(
+            url=value.get("url", ""),
+            status=value.get("status", "unknown"),
+            latency_ms=value.get("latency_ms"),
+            error=value.get("error")
+        )
+
+    return DetailedHealthResponse(
+        middleware=health_status.get("middleware", "healthy"),
+        status=health_status.get("status", "unknown"),
+        error=health_status.get("error"),
+        backends=backends
+    )
 
 
 @app.get("/v1/metrics")
