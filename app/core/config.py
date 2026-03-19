@@ -28,7 +28,7 @@ def set_request_id(request_id: str):
 class Settings(BaseSettings):
     # ADK Backend Configuration
     adk_backend_mapping_str: str = Field(default="", alias="ADK_BACKEND_MAPPING")
-    adk_timeout: int = 120000
+    adk_timeout: int = 240000
     adk_connect_timeout: int = 30000
 
     # Server Configuration

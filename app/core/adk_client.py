@@ -57,7 +57,7 @@ class ADKClient:
         """Get or create HTTP client with connection pooling."""
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(120.0, connect=10.0),
+                timeout=httpx.Timeout(240.0, connect=10.0),
                 limits=self._http_limits,
                 http2=True  # Enable HTTP/2 for better performance
             )

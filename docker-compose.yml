@@ -24,7 +24,7 @@ services:
       - ADK_BACKEND_MAPPING=${ADK_BACKEND_MAPPING}
 
       # 超时配置
-      - ADK_TIMEOUT=${ADK_TIMEOUT:-120000}
+      - ADK_TIMEOUT=${ADK_TIMEOUT:-240000}
       - ADK_CONNECT_TIMEOUT=${ADK_CONNECT_TIMEOUT:-30000}
 
       # 认证配置
@@ -52,7 +52,7 @@ services:
 
     # 健康检查
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
