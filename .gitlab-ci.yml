@@ -31,7 +31,7 @@ stages:
 
         # ADK 后端配置（必填）
         export ADK_BACKEND_MAPPING=\"$ADK_BACKEND_MAPPING\"
-        export ADK_TIMEOUT=\"${ADK_TIMEOUT:-120000}\"
+        export ADK_TIMEOUT=\"${ADK_TIMEOUT:-240000}\"
         export ADK_CONNECT_TIMEOUT=\"${ADK_CONNECT_TIMEOUT:-30000}\"
 
         # 认证配置
@@ -67,7 +67,7 @@ stages:
         # 健康检查
         echo '等待服务启动...'
         sleep 10
-        docker exec $CONTAINER_NAME curl -f http://localhost:8000/health || exit 1
+        docker exec $CONTAINER_NAME curl -f http://localhost:8000/v1/health || exit 1
 
         echo ''
         echo '================================================'

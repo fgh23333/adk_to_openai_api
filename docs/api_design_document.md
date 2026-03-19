@@ -130,7 +130,7 @@ data: \[DONE\]
 
 用于容器编排或负载均衡器的健康监测。
 
-* **Endpoint**: GET /health  
+* **Endpoint**: GET /v1/health
 * **Summary**: 检查中间件是否运行正常。
 
 #### **响应 (Response)**
