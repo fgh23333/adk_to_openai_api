@@ -1,90 +1,79 @@
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from typing import Optional, Union
-from app.core.config import settings
-from app.core.api_key_manager import get_api_key_manager
+from typing import Optional
 import logging
 import hashlib
 
 logger = logging.getLogger(__name__)
 
-# Initialize HTTP Bearer security scheme
+# Initialize HTTP Bearer security scheme (no auto error)
 security = HTTPBearer(auto_error=False)
 
 
 class APIKeyAuth:
-    def __init__(self):
-        self.api_key_manager = get_api_key_manager()
+    """
+    简化的认证：直接使用上游 token 做租户区分，不做验证。
 
-    async def verify_api_key(self, credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> Union[bool, str]:
+    租户策略：
+    - 如果有 Authorization header → 使用其 hash 作为租户 ID
+    - 如果没有 Authorization header → 使用默认租户 ID
+    """
+
+    async def verify_api_key(self, credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> str:
         """
-        Verify API Key from Authorization header.
+        从 Authorization header 获取 token，直接用作租户标识。
+
+        不做任何验证，只用于租户区分。
 
         Args:
             credentials: HTTP Authorization credentials
 
         Returns:
-            str: The API key (can be used as session identifier)
-
-        Raises:
-            HTTPException: If API key is invalid or missing
+            str: 租户 ID（基于 token 的 hash）
         """
-        # If API key verification is disabled, return default key
-        if not settings.enable_api_key_auth:
-            return settings.default_api_key
-
-        # If no credentials provided
         if not credentials:
-            logger.warning("Missing API key in Authorization header")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "error": {
-                        "message": "You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_API_KEY).",
-                        "type": "invalid_request_error",
-                        "param": None,
-                        "code": "missing_api_key"
-                    }
-                },
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            # 没有提供 token，使用默认租户
+            logger.debug("No Authorization header, using default tenant")
+            return "tenant_default"
 
-        # Extract API key from Bearer token
-        api_key = credentials.credentials
+        # 提取 token
+        token = credentials.credentials
 
-        # Validate API key using dynamic manager
-        if not self.api_key_manager.has_key(api_key):
-            logger.warning(f"Invalid API key provided: {api_key[:10]}...")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "error": {
-                        "message": "Invalid API key provided.",
-                        "type": "invalid_request_error",
-                        "param": None,
-                        "code": "invalid_api_key"
-                    }
-                },
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        # 使用 token 的 hash 作为租户 ID（避免泄露原始 token）
+        tenant_id = self.get_tenant_id_from_token(token)
 
-        logger.debug(f"API key validated successfully: {api_key[:10]}...")
-        return api_key
+        logger.debug(f"Request from tenant: {tenant_id}")
+        return tenant_id
+
+    @staticmethod
+    def get_tenant_id_from_token(token: Optional[str]) -> str:
+        """
+        从 token 生成租户标识符
+
+        使用 token 的 MD5 hash 作为租户 ID，确保：
+        1. 不同 token 的租户完全隔离
+        2. 日志中不会泄露原始 token
+        3. 同一 token 始终对应同一租户
+        """
+        if not token:
+            return "tenant_default"
+
+        # 使用 token 的 MD5 hash 作为租户 ID
+        token_hash = hashlib.md5(token.encode()).hexdigest()[:16]
+        return f"tenant_{token_hash}"
 
     @staticmethod
     def get_session_id_from_api_key(api_key: Optional[str]) -> str:
         """
-        从 API key 生成用户标识符
+        向后兼容：从 API key 生成用户标识符
 
-        直接使用 API key 的 hash 作为用户 ID，确保不同 API key 的用户完全隔离
-        当 api_key 为 None 时（未启用认证），返回默认用户 ID
+        现在直接使用 token 的 hash，与 get_tenant_id_from_token 相同
         """
         if not api_key:
-            # 未启用认证时，返回默认用户 ID
-            return "user_default"
-        # 使用 API key 的 MD5 hash 作为用户 ID
+            return "tenant_default"
+
         key_hash = hashlib.md5(api_key.encode()).hexdigest()[:16]
-        return f"user_{key_hash}"
+        return f"tenant_{key_hash}"
 
 
 # Create global auth instance
@@ -94,6 +83,7 @@ auth = APIKeyAuth()
 async def verify_api_key_dependency(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> str:
     """
     FastAPI dependency for API key verification.
-    Returns the API key string (can be used as session identifier).
+
+    不做验证，直接返回租户 ID。
     """
     return await auth.verify_api_key(credentials)
