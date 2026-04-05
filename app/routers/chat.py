@@ -2,7 +2,7 @@
 聊天完成接口路由
 """
 from fastapi import APIRouter
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Optional, Union
 
 from fastapi import HTTPException, Request, UploadFile, File, Header
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -13,7 +13,8 @@ from app.core.metrics import get_metrics_collector, RequestMetrics
 from app.core.auth import verify_api_key_dependency, auth
 from app.schemas.models import (
     ChatCompletionRequest, ChatCompletionResponse,
-    ListModelsResponse, ModelInfo
+    ListModelsResponse, ModelInfo,
+    UploadBinaryResponse, UploadTextResponse, RootResponse
 )
 from app.database.database import get_database
 import logging
@@ -34,23 +35,32 @@ metrics_collector = get_metrics_collector()
 
 
 def _generate_session_id_from_messages(messages: List, tenant_id: str) -> str:
-    """Generate session ID based on conversation history hash."""
+    """
+    Generate session ID based on conversation history hash.
+
+    会话策略：
+    1. 如果 messages 只有 1 条 → 自动创建新会话
+    2. 如果 user 字段包含 "new:" 前缀 → 强制创建新会话
+    3. 如果 user 字段包含 "reset:" 前缀 → 重置指定会话
+    4. 否则 → 基于历史内容哈希生成会话 ID
+    """
+    # 检查是否为空或单条消息 → 自动新会话
     if not messages or len(messages) <= 1:
-        return f"{tenant_id}_new_{uuid.uuid4().hex[:8]}"
+        return f"{tenant_id}_new_{uuid.uuid4().hex[:12]}"
 
     history_parts = []
     for msg in messages[:-1]:
         role = getattr(msg, 'role', '')
         content = getattr(msg, 'content', '')
         if isinstance(content, str):
-            history_parts.append(f"{role}:{content}")
+            history_parts.append(f"{role}:{content[:100]}")  # 只取前100字符
         elif isinstance(content, list):
             for part in content:
                 if hasattr(part, 'text') and part.text:
-                    history_parts.append(f"{role}:{part.text}")
+                    history_parts.append(f"{role}:{part.text[:100]}")
 
     if not history_parts:
-        return f"{tenant_id}_new_{uuid.uuid4().hex[:8]}"
+        return f"{tenant_id}_new_{uuid.uuid4().hex[:12]}"
 
     import hashlib
     history_str = "|".join(history_parts)
@@ -74,15 +84,57 @@ async def create_chat_completion(
     api_key_valid: str = None,
     x_session_id: Annotated[Optional[str], Header()] = None,
     x_user_id: Annotated[Optional[str], Header()] = None,
+    x_reset_session: Annotated[Optional[str], Header()] = None,
 ) -> ChatCompletionResponse:
-    """Create a chat completion."""
+    """
+    Create a chat completion.
+
+    Headers:
+    - X-Session-ID: 指定会话 ID
+    - X-User-ID: 指定用户 ID
+    - X-Reset-Session: "true" 时重置会话上下文（开始新对话）
+    """
     from app.core.auth import auth
 
     # Get tenant ID from API Key
     tenant_id = auth.get_session_id_from_api_key(api_key_valid)
 
     # Generate Session ID
-    session_id = _generate_session_id_from_messages(request.messages, tenant_id)
+    # 检查是否需要重置会话（多种方式）
+    reset_session = False
+
+    # 方式1: 通过 Header
+    if x_reset_session == "true" or http_request.headers.get("X-Reset-Session") == "true":
+        reset_session = True
+
+    # 方式2: 通过 user 字段（Dify 可用）
+    # user="new" → 强制新会话
+    # user="reset:xxx" → 重置会话 xxx
+    # user="session:xxx" → 使用指定会话
+    if request.user:
+        if request.user == "new" or request.user.startswith("new:"):
+            reset_session = True
+        elif request.user.startswith("session:"):
+            # 使用指定会话 ID
+            session_id = request.user[8:]  # 去掉 "session:" 前缀
+            request.user = session_id
+            logger.info(f"Using specified session: {session_id}")
+            # 不需要继续生成，跳过后续逻辑
+            reset_session = False
+        elif request.user.startswith("reset:"):
+            # 重置指定会话
+            target_session = request.user[6:]  # 去掉 "reset:" 前缀
+            session_id = f"{tenant_id}_new_{uuid.uuid4().hex[:12]}"
+            logger.info(f"Resetting session {target_session}, new session: {session_id}")
+            request.user = session_id
+            reset_session = False  # 已处理，不需要再次重置
+
+    if reset_session:
+        # 强制创建新会话
+        session_id = f"{tenant_id}_new_{uuid.uuid4().hex[:12]}"
+        logger.info(f"Session reset requested, new session: {session_id}")
+    else:
+        session_id = _generate_session_id_from_messages(request.messages, tenant_id)
 
     # Allow override via headers
     session_id_override = x_session_id or http_request.headers.get("X-Session-ID")
@@ -96,7 +148,7 @@ async def create_chat_completion(
         session_id = request.user
 
     request.user = session_id
-    logger.info(f"Chat request: tenant={tenant_id}, session={session_id}, model={request.model}")
+    logger.info(f"Chat request: tenant={tenant_id}, session={session_id}, model={request.model}, reset={reset_session}")
 
     # Validate request
     if not request.messages:
@@ -315,11 +367,11 @@ async def list_models(
     return await adk_client.list_models(request_model=query_model)
 
 
-@router.post("/upload")
+@router.post("/v1/upload", response_model=Union[UploadBinaryResponse, UploadTextResponse], summary="上传文件")
 async def upload_file(
     file: UploadFile = File(...),
     api_key: str = None
-) -> dict:
+):
     """Upload file and convert to Base64 format."""
     from app.utils.multimodal import MultimodalProcessor
 
@@ -352,34 +404,157 @@ async def upload_file(
     )
 
     if inline_data:
-        return {
-            "success": True,
-            "filename": file.filename,
-            "mime_type": inline_data.mimeType,
-            "base64_data": inline_data.data,
-            "size": file_size,
-            "type": "binary"
-        }
+        return UploadBinaryResponse(
+            filename=file.filename,
+            mime_type=inline_data.mimeType,
+            base64_data=inline_data.data,
+            size=file_size
+        )
     elif extracted_text:
-        return {
-            "success": True,
-            "filename": file.filename,
-            "original_mime_type": detected_mime,
-            "extracted_text": extracted_text,
-            "text_length": len(extracted_text),
-            "size": file_size,
-            "type": "text"
-        }
+        return UploadTextResponse(
+            filename=file.filename,
+            original_mime_type=detected_mime,
+            extracted_text=extracted_text,
+            text_length=len(extracted_text),
+            size=file_size
+        )
     else:
         raise HTTPException(status_code=500, detail="Failed to process file")
 
 
-@router.get("/")
-async def root() -> dict:
-    """Root endpoint."""
+@router.get("/", response_model=RootResponse, summary="服务信息")
+async def root():
+    """Root endpoint - 服务基本信息。"""
     from app.core.config import get_request_id
+    return RootResponse(
+        message="ADK Middleware API is running",
+        version="1.3.0",
+        request_id=get_request_id()
+    )
+
+
+# ==================== 会话管理端点 ====================
+
+@router.delete("/v1/sessions/{session_id}", summary="删除会话")
+async def delete_session(
+    session_id: str,
+    agent_name: str = None,
+    mapping_key: str = None,
+    api_key_valid: str = None
+):
+    """
+    删除指定会话，重置上下文。
+
+    Args:
+        session_id: 会话 ID
+        agent_name: ADK agent 名称（可选，默认从 model 推断）
+        mapping_key: 后端映射 key（可选）
+
+    Headers:
+        X-Agent-Name: 指定 agent 名称
+        X-Mapping-Key: 指定后端映射 key
+    """
+    from app.core.auth import auth
+
+    # 从 header 获取参数
+    if not agent_name:
+        agent_name = None  # ADKClient 会使用默认值
+
+    if not mapping_key:
+        mapping_key = None
+
+    try:
+        result = await adk_client.delete_session(
+            agent_name=agent_name or "default",
+            user_id=session_id.split("_")[0] if "_" in session_id else session_id,
+            session_id=session_id,
+            mapping_key=mapping_key
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error deleting session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/v1/sessions/reset", summary="重置会话")
+async def reset_session_endpoint(
+    request: Request,
+    agent_name: str = None,
+    mapping_key: str = None
+):
+    """
+    重置会话上下文（删除并重新创建）。
+
+    Body:
+    {
+        "session_id": "session_xxx",
+        "agent_name": "my_agent",  // 可选
+        "mapping_key": "app-name"   // 可选
+    }
+
+    或者通过 Header 指定：
+    - X-Session-ID: 会话 ID
+    - X-Agent-Name: agent 名称
+    - X-Mapping-Key: 后端映射 key
+    """
+    from app.core.auth import auth
+    from pydantic import BaseModel
+
+    class ResetRequest(BaseModel):
+        session_id: str
+        agent_name: Optional[str] = None
+        mapping_key: Optional[str] = None
+
+    try:
+        body = await request.json()
+        reset_req = ResetRequest(**body)
+    except:
+        # 从 header 获取
+        reset_req = ResetRequest(
+            session_id=request.headers.get("X-Session-ID", ""),
+            agent_name=request.headers.get("X-Agent-Name"),
+            mapping_key=request.headers.get("X-Mapping-Key")
+        )
+
+    if not reset_req.session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    try:
+        result = await adk_client.reset_session(
+            agent_name=reset_req.agent_name or "default",
+            user_id=reset_req.session_id.split("_")[0] if "_" in reset_req.session_id else reset_req.session_id,
+            session_id=reset_req.session_id,
+            mapping_key=reset_req.mapping_key
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error resetting session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/v1/sessions", summary="列本地缓存的会话")
+async def list_sessions():
+    """列出本地缓存的会话列表（仅供参考）。"""
+    sessions = adk_client.list_cached_sessions()
     return {
-        "message": "ADK Middleware API is running",
-        "version": "1.3.0",
-        "request_id": get_request_id()
+        "count": len(sessions),
+        "sessions": sessions
+    }
+
+
+@router.post("/v1/sessions/clear-cache", summary="清空本地会话缓存")
+async def clear_session_cache():
+    """
+    清空本地会话缓存。
+
+    注意：这只清空中间件的本地缓存，ADK 后端的会话仍然存在。
+    要彻底删除会话，请使用 DELETE /v1/sessions/{session_id}
+    """
+    from app.core.adk_client import ADKClient
+    # 创建新实例会清空缓存
+    global adk_client
+    adk_client = ADKClient()
+    return {
+        "success": True,
+        "message": "Local session cache cleared"
     }

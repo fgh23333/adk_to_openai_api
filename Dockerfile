@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+FROM 172.31.238.10/qtp/base/python:3.12.11-slim-bullseye
+MAINTAINER "QTP"
 
 LABEL maintainer="ADK Middleware"
 LABEL description="OpenAI-compatible API middleware for Google ADK"
@@ -29,17 +30,15 @@ COPY app ./app
 COPY main.py .
 COPY README.md .
 
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
-USER app
+# Create data directory
+RUN mkdir -p /app/data
 
-# Expose port
-EXPOSE 8080
+# Expose port (container listens on 8000)
+EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/v1/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/v1/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--log-level", "info"]
